@@ -1,0 +1,20 @@
+# ملفاتي — .gitignore
+
+# ملفات التطوير المؤقتة
+_serve.js
+serve.js
+*.log
+npm-debug.log*
+
+# نظام الملفات
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# المحررات
+.vscode/
+.idea/
+*.swp
+
+# الاعتماديات
+node_modules/

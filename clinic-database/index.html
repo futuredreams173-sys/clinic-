@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>المواعيد — تجربة Supabase</title>
+<style>
+  body { font-family: Tahoma, Arial, sans-serif; background:#f4f7f8; margin:0; padding:24px; color:#1e2a30; }
+  h1 { font-size:22px; margin:0 0 16px; }
+  .bar { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+  select, button { padding:8px 12px; font:inherit; border:1px solid #c9d4d8; border-radius:6px; background:#fff; }
+  button { background:#1f7a6d; color:#fff; border:none; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; }
+  th, td { padding:10px; border-bottom:1px solid #e6ecee; text-align:right; font-size:14px; }
+  th { background:#e8f2f0; }
+  #msg { margin:12px 0; color:#a33; }
+</style>
+</head>
+<body>
+<h1>جدول المواعيد (بيانات تجريبية)</h1>
+
+<div class="bar">
+  <select id="status">
+    <option value="">كل الحالات</option>
+    <option>مجدول</option><option>مكتمل</option><option>ملغي</option><option>لم يحضر</option>
+  </select>
+  <button id="load">عرض</button>
+</div>
+<div id="msg"></div>
+
+<table>
+  <thead><tr><th>التاريخ</th><th>الوقت</th><th>المريض</th><th>الطبيب</th><th>القسم</th><th>المستشفى</th><th>الحالة</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script type="module">
+  import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+  // ضعي بيانات مشروعك من: Project Settings > API
+  const SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
+  const SUPABASE_ANON_KEY = 'YOUR-ANON-KEY';
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const rows = document.getElementById('rows');
+  const msg  = document.getElementById('msg');
+
+  async function load() {
+    msg.textContent = '';
+    let q = supabase.from('appointments_details').select('*').order('appt_date');
+    const s = document.getElementById('status').value;
+    if (s) q = q.eq('status', s);
+
+    const { data, error } = await q;
+    if (error) { msg.textContent = 'خطأ: ' + error.message; return; }
+    if (!data.length) { msg.textContent = 'لا توجد نتائج'; }
+
+    rows.innerHTML = data.map(r => `
+      <tr><td>${r.appt_date}</td><td>${r.appt_time.slice(0,5)}</td><td>${r.patient_name}</td>
+      <td>${r.doctor_name}</td><td>${r.department}</td><td>${r.hospital}</td><td>${r.status}</td></tr>`).join('');
+  }
+
+  document.getElementById('load').onclick = load;
+  load();
+</script>
+</body>
+</html>
