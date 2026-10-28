@@ -1,0 +1,19 @@
+{
+  "name": "clinic-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Clinic self-registration API — Express + SQLite, Raqeem/Sehhaty adapters",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test --test-reporter=spec test/api.test.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
+  }
+}

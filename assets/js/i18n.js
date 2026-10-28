@@ -1,0 +1,521 @@
+/* ==========================================================================
+   عناية — الترجمة (عربي / إنجليزي)
+   ========================================================================== */
+(function (global) {
+  'use strict';
+
+  var DICT = {
+    ar: {
+      brand: 'عناية',
+      brandTag: 'الرعاية الصحية المتكاملة',
+      langToggle: 'English',
+      langTitle: 'تبديل اللغة',
+
+      navHome: 'الرئيسية',
+      navRegister: 'التسجيل الذاتي',
+      navPortal: 'بوابة المريض',
+
+      heroBadge: 'التسجيل الذاتي متاح الآن',
+      heroTitleA: 'سجّل زيارتك في',
+      heroTitleEm: 'دقيقة واحدة',
+      heroLead: 'منصة «عناية» تتيح لك تسجيل بياناتك بنفسك، واستلام رقم الانتظار فوراً، ومتابعة ملفك الصحي في مكان واحد — بخصوصية تامة ودون انتظار في الاستقبال.',
+      heroCta1: 'ابدأ التسجيل',
+      heroCta2: 'دخول المرضى',
+      trust1t: 'رقم انتظار فوري',
+      trust1s: 'دون طوابير الاستقبال',
+      trust2t: 'مزامنة رقيم وصحتي',
+      trust2s: 'عبر خادم آمن',
+      trust3t: 'خصوصية مطلقة',
+      trust3s: 'ملفك مشفّر ولا يراه غيرك',
+
+      showLabel: 'رقم الانتظار',
+      showSync: 'حالة المزامنة',
+      showOk: 'تم',
+      showWait: 'قيد الانتظار',
+      showNote: 'ملفك مشفّر على جهازك',
+      showNoteSub: 'لا يستطيع أي مستخدم آخر فتحه',
+
+      featTitle: 'لماذا عناية؟',
+      featLead: 'تجربة تسجيل مصمّمة بمعايير المنشآت الصحية العالمية: بسيطة للمراجع، وآمنة لبياناته.',
+      feat1t: 'تسجيل بلا انتظار',
+      feat1d: 'ثلاث خطوات فقط لاستلام رقم الانتظار، مع تحقق فوري من صحة البيانات قبل الحفظ.',
+      feat2t: 'عزل كامل للملفات',
+      feat2d: 'كل ملف مرتبط برقم الوثيقة ورمز دخول خاص. لا يمكن لأي مراجع آخر الوصول إلى بياناتك.',
+      feat3t: 'ربط بالأنظمة الوطنية',
+      feat3d: 'تُرسل الزيارة تلقائياً إلى رقيم وصحتي، مع إعادة محاولة ذكية عند تعذّر الاتصال.',
+      feat4t: 'تصميم يخدم الجميع',
+      feat4d: 'دعم كامل للعربية والإنجليزية، واتجاه RTL أصيل، وخطوط واضحة وأزرار كبيرة.',
+
+      howTitle: 'كيف تعمل المنصة؟',
+      how1t: 'اختر فئتك',
+      how1d: 'مواطن، عمالة منزلية، أو مشمول بالتأمين الطبي.',
+      how2t: 'أدخل بياناتك',
+      how2d: 'الوثيقة، تاريخ الميلاد، الجوال، ورمز دخول خاص بك.',
+      how3t: 'استلم رقمك',
+      how3d: 'يظهر رقم الانتظار فوراً مع حالة الإرسال إلى رقيم وصحتي.',
+
+      ctaTitle: 'جاهز لتبدأ؟',
+      ctaLead: 'التسجيل يستغرق أقل من دقيقة، ويمكنك متابعة ملفك من أي جهاز لاحقاً.',
+      ctaBtn: 'سجّل الآن',
+
+      footAbout: 'منصة تسجيل ذاتي للمراجعين، مبنية على واجهة حديثة وخادم آمن، مع الحفاظ الكامل على خصوصية البيانات.',
+      footPlatform: 'المنصة',
+      footSupport: 'الدعم',
+      footPrivacy: 'سياسة الخصوصية',
+      footTerms: 'شروط الاستخدام',
+      footContact: 'تواصل معنا',
+      footHelp: 'المساعدة',
+      footRights: 'جميع الحقوق محفوظة.',
+      footBuilt: 'نسخة تجريبية — لا تُدخل بيانات حقيقية.',
+
+      kioskTitle: 'التسجيل الذاتي',
+      kioskSub: 'أكمل الخطوات التالية لاستلام رقم الانتظار',
+      step1: 'الفئة',
+      step2: 'الوثيقة',
+      step3: 'البيانات',
+
+      whoTitle: 'من أنت؟',
+      whoSub: 'اختر الفئة التي تنطبق عليك',
+      catCitizen: 'مواطن سعودي',
+      catCitizenSub: 'التسجيل بالهوية الوطنية',
+      catDomestic: 'عمالة منزلية',
+      catDomesticSub: 'التسجيل برقم الإقامة',
+      catInsured: 'مشمول بالتأمين الطبي',
+      catInsuredSub: 'التسجيل بالهوية أو الإقامة أو الجواز',
+
+      docTitle: 'بيانات الوثيقة',
+      docSub: 'أدخل رقم الوثيقة الرسمية الخاصة بك',
+      docType: 'نوع الوثيقة',
+      docNo: 'رقم الوثيقة',
+      docNoPh: 'أدخل الرقم',
+      nid: 'هوية وطنية',
+      iqama: 'إقامة',
+      passport: 'جواز سفر',
+
+      detailsTitle: 'بيانات المراجع',
+      detailsSub: 'تُستخدم هذه البيانات لإنشاء ملفك الصحي',
+      dob: 'تاريخ الميلاد',
+      calHijri: 'هجري',
+      calGreg: 'ميلادي',
+      day: 'اليوم',
+      month: 'الشهر',
+      year: 'السنة',
+      phone: 'رقم الجوال',
+      phonePh: '05XXXXXXXX',
+      insurer: 'شركة التأمين',
+      policy: 'رقم البوليصة',
+      pin: 'رمز الدخول',
+      pin2: 'تأكيد رمز الدخول',
+      pinHint: '6 أحرف أو أرقام على الأقل — يُستخدم لتشفير ملفك، ولا يمكن استعادته إن نسيته.',
+      consentText: 'أوافق على سياسة الخصوصية ومشاركة بياناتي مع الأنظمة الصحية التابعة للمركز.',
+      submit: 'تأكيد التسجيل',
+
+      doneTitle: 'تم تسجيلك بنجاح',
+      doneSub: 'احتفظ برقم الانتظار ورمز الدخول',
+      doneQueue: 'رقم الانتظار',
+      syncTitle: 'حالة الإرسال',
+      again: 'تسجيل مراجع آخر',
+      toPortal: 'فتح ملفي',
+
+      raqeem: 'رقيم',
+      sehhaty: 'صحتي',
+      syncOk: 'تم',
+      syncFail: 'فشل',
+      syncWait: 'قيد الانتظار',
+      syncOffline: 'غير متاح',
+
+      loginTitle: 'بوابة المريض',
+      loginSub: 'ادخل برقم وثيقتك ورمز الدخول لعرض ملفك الصحي',
+      loginBtn: 'دخول',
+      loginNoVault: 'لا يوجد ملف محفوظ على هذا الجهاز لهذه الوثيقة. سجّل زيارتك أولاً أو اتصل بالخادم.',
+      loginHint: 'ملفك مشفّر على جهازك، ولا يمكن لأي مستخدم آخر فتحه.',
+
+      greeting: 'أهلاً بك',
+      memberSince: 'مراجع منذ',
+      logout: 'خروج',
+
+      tabOverview: 'ملفي',
+      tabVisits: 'زياراتي',
+      tabNotes: 'ملاحظاتي',
+
+      statVisits: 'إجمالي الزيارات',
+      statLast: 'آخر زيارة',
+      statSync: 'حالة المزامنة',
+      noValue: '—',
+
+      profileTitle: 'البيانات المسجلة',
+      labelDocType: 'نوع الوثيقة',
+      labelDocNo: 'رقم الوثيقة',
+      labelDob: 'تاريخ الميلاد',
+      labelPhone: 'الجوال',
+      labelCategory: 'الفئة',
+      labelInsurer: 'شركة التأمين',
+      labelPolicy: 'البوليصة',
+      labelCreated: 'تاريخ التسجيل',
+
+      noVisits: 'لا توجد زيارات بعد',
+      noVisitsSub: 'ابدأ بزيارة جديدة من صفحة التسجيل الذاتي.',
+      visitReason: 'سبب الزيارة',
+      visitQueue: 'رقم الانتظار',
+      generalVisit: 'زيارة عامة',
+      visitStatus: 'الحالة',
+      stWaiting: 'في الانتظار',
+      stCalled: 'تم النداء',
+      stDone: 'مكتملة',
+      stCancelled: 'ملغاة',
+
+      notesTitle: 'ملاحظاتي الخاصة',
+      notesSub: 'تُحفظ مشفّرة على جهازك فقط — لا تُرسل إلى أي خادم.',
+      addNote: 'إضافة ملاحظة',
+      noNotes: 'لا توجد ملاحظات',
+      noNotesSub: 'أضف ملاحظة خاصة بك، مثل تذكير بموعد أو سؤال للطبيب.',
+      noteTitle: 'العنوان',
+      noteBody: 'النص',
+      noteTitlePh: 'مثال: أسئلة قبل الموعد',
+      noteBodyPh: 'اكتب ملاحظتك هنا…',
+      exportVault: 'تصدير نسخة من ملفي',
+
+      cancel: 'إلغاء',
+      save: 'حفظ',
+      delete: 'حذف',
+      close: 'إغلاق',
+      back: 'رجوع',
+      next: 'متابعة',
+      retry: 'إعادة المحاولة',
+      loading: 'جارٍ التنفيذ…',
+      saving: 'جارٍ الحفظ…',
+
+      confirmDeleteTitle: 'تأكيد الحذف',
+      confirmDeleteBody: 'هل تريد حذف هذه الملاحظة نهائياً؟',
+      confirmYes: 'نعم، احذف',
+
+      offlineTitle: 'الخادم غير متصل',
+      offlineBody: 'تم حفظ بياناتك مشفّرة على هذا الجهاز فقط، ولم تُرسل إلى رقيم أو صحتي. شغّل خادم المنصة لتفعيل المزامنة.',
+      offlineChip: 'وضع محلي',
+      online: 'متصل',
+      checking: 'جارٍ التحقق…',
+      menu: 'القائمة',
+
+      errRequired: 'هذا الحقل مطلوب',
+      errNid: 'رقم الهوية 10 أرقام ويبدأ بـ 1',
+      errIqama: 'رقم الإقامة 10 أرقام ويبدأ بـ 2',
+      errPass: 'رقم الجواز من 6 إلى 12 حرفاً ورقماً إنجليزياً',
+      errPhone: 'رقم الجوال 10 أرقام ويبدأ بـ 05',
+      errDob: 'تاريخ غير صحيح',
+      errCitizenDoc: 'المواطن يسجّل بالهوية الوطنية',
+      errPinShort: 'رمز الدخول يجب أن يكون 6 أحرف على الأقل',
+      errPinLong: 'رمز الدخول طويل جداً',
+      errPinMatch: 'الرمز وتأكيده غير متطابقين',
+      errConsent: 'يجب الموافقة على سياسة الخصوصية',
+      errDocType: 'نوع الوثيقة غير صحيح',
+      errCategory: 'الفئة غير صحيحة',
+      errTooLong: 'القيمة طويلة جداً',
+      errInvalidPin: 'رقم الوثيقة أو رمز الدخول غير صحيح',
+      errServer: 'تعذّر الاتصال بالخادم. تحقق من التشغيل أو الشبكة.',
+      errGeneric: 'حدث خطأ غير متوقع. حاول مرة أخرى.',
+      errNoCrypto: 'متصفحك لا يدعم التشفير المطلوب. استخدم متصفحاً حديثاً.',
+
+      copied: 'تم النسخ',
+      saved: 'تم الحفظ',
+      noteAdded: 'أُضيفت الملاحظة',
+      noteDeleted: 'حُذفت الملاحظة',
+      exported: 'تم تصدير الملف',
+      registered: 'تم التسجيل بنجاح',
+      kioskReset: 'انتهت الجلسة لعدم الاستخدام',
+
+      docTypeNid: 'هوية وطنية',
+      docTypeIqama: 'إقامة',
+      docTypePassport: 'جواز سفر',
+    },
+
+    en: {
+      brand: 'Enaya',
+      brandTag: 'Integrated Healthcare',
+      langToggle: 'العربية',
+      langTitle: 'Switch language',
+
+      navHome: 'Home',
+      navRegister: 'Self registration',
+      navPortal: 'Patient portal',
+
+      heroBadge: 'Self-registration is open',
+      heroTitleA: 'Register your visit in',
+      heroTitleEm: 'one minute',
+      heroLead: 'Enaya lets you check in yourself, receive your queue number instantly, and follow your health record in one place — privately, with no reception queue.',
+      heroCta1: 'Start registration',
+      heroCta2: 'Patient sign-in',
+      trust1t: 'Instant queue number',
+      trust1s: 'No reception lines',
+      trust2t: 'Raqeem & Sehhaty sync',
+      trust2s: 'Through a secure server',
+      trust3t: 'Absolute privacy',
+      trust3s: 'Your record is encrypted',
+
+      showLabel: 'Queue number',
+      showSync: 'Sync status',
+      showOk: 'Done',
+      showWait: 'Pending',
+      showNote: 'Your record is encrypted',
+      showNoteSub: 'No other user can open it',
+
+      featTitle: 'Why Enaya?',
+      featLead: 'A registration experience built to global healthcare standards: simple for the patient, safe for the data.',
+      feat1t: 'No waiting',
+      feat1d: 'Three steps to your queue number, with instant validation before anything is stored.',
+      feat2t: 'Strict isolation',
+      feat2d: 'Every record is bound to a document number and a personal access code. Nobody else can reach it.',
+      feat3t: 'National systems',
+      feat3d: 'Visits are pushed to Raqeem and Sehhaty automatically, with smart retries on failure.',
+      feat4t: 'Accessible by design',
+      feat4d: 'Full Arabic and English support, native RTL, clear type and large touch targets.',
+
+      howTitle: 'How it works',
+      how1t: 'Pick your category',
+      how1d: 'Citizen, domestic worker, or insured patient.',
+      how2t: 'Enter your details',
+      how2d: 'Document, date of birth, mobile, and a personal access code.',
+      how3t: 'Get your number',
+      how3d: 'Your queue number appears instantly with the Raqeem and Sehhaty status.',
+
+      ctaTitle: 'Ready to start?',
+      ctaLead: 'Registration takes under a minute, and you can open your record from any device later.',
+      ctaBtn: 'Register now',
+
+      footAbout: 'A patient self-registration platform built on a modern interface and a secure server, with full data privacy.',
+      footPlatform: 'Platform',
+      footSupport: 'Support',
+      footPrivacy: 'Privacy policy',
+      footTerms: 'Terms of use',
+      footContact: 'Contact us',
+      footHelp: 'Help',
+      footRights: 'All rights reserved.',
+      footBuilt: 'Prototype — do not enter real data.',
+
+      kioskTitle: 'Self registration',
+      kioskSub: 'Complete the steps to receive your queue number',
+      step1: 'Category',
+      step2: 'Document',
+      step3: 'Details',
+
+      whoTitle: 'Who are you?',
+      whoSub: 'Choose the category that applies to you',
+      catCitizen: 'Saudi citizen',
+      catCitizenSub: 'Register with your national ID',
+      catDomestic: 'Domestic worker',
+      catDomesticSub: 'Register with your Iqama',
+      catInsured: 'Insured patient',
+      catInsuredSub: 'National ID, Iqama, or passport',
+
+      docTitle: 'Document details',
+      docSub: 'Enter your official document number',
+      docType: 'Document type',
+      docNo: 'Document number',
+      docNoPh: 'Enter the number',
+      nid: 'National ID',
+      iqama: 'Iqama',
+      passport: 'Passport',
+
+      detailsTitle: 'Patient details',
+      detailsSub: 'This information creates your health record',
+      dob: 'Date of birth',
+      calHijri: 'Hijri',
+      calGreg: 'Gregorian',
+      day: 'Day',
+      month: 'Month',
+      year: 'Year',
+      phone: 'Mobile number',
+      phonePh: '05XXXXXXXX',
+      insurer: 'Insurance company',
+      policy: 'Policy number',
+      pin: 'Access code',
+      pin2: 'Confirm access code',
+      pinHint: 'At least 6 characters. It encrypts your record and cannot be recovered if lost.',
+      consentText: 'I agree to the privacy policy and to sharing my data with the center’s health systems.',
+      submit: 'Confirm registration',
+
+      doneTitle: 'You are registered',
+      doneSub: 'Keep your queue number and access code',
+      doneQueue: 'Queue number',
+      syncTitle: 'Submission status',
+      again: 'Register another patient',
+      toPortal: 'Open my record',
+
+      raqeem: 'Raqeem',
+      sehhaty: 'Sehhaty',
+      syncOk: 'Done',
+      syncFail: 'Failed',
+      syncWait: 'Pending',
+      syncOffline: 'Unavailable',
+
+      loginTitle: 'Patient portal',
+      loginSub: 'Sign in with your document number and access code',
+      loginBtn: 'Sign in',
+      loginNoVault: 'No record found on this device for this document. Register first or connect to the server.',
+      loginHint: 'Your record is encrypted on this device and cannot be opened by anyone else.',
+
+      greeting: 'Welcome',
+      memberSince: 'Patient since',
+      logout: 'Sign out',
+
+      tabOverview: 'My record',
+      tabVisits: 'My visits',
+      tabNotes: 'My notes',
+
+      statVisits: 'Total visits',
+      statLast: 'Last visit',
+      statSync: 'Sync status',
+      noValue: '—',
+
+      profileTitle: 'Registered details',
+      labelDocType: 'Document type',
+      labelDocNo: 'Document number',
+      labelDob: 'Date of birth',
+      labelPhone: 'Mobile',
+      labelCategory: 'Category',
+      labelInsurer: 'Insurer',
+      labelPolicy: 'Policy',
+      labelCreated: 'Registered on',
+
+      noVisits: 'No visits yet',
+      noVisitsSub: 'Start a new visit from the self-registration page.',
+      visitReason: 'Reason',
+      visitQueue: 'Queue',
+      generalVisit: 'General visit',
+      visitStatus: 'Status',
+      stWaiting: 'Waiting',
+      stCalled: 'Called',
+      stDone: 'Completed',
+      stCancelled: 'Cancelled',
+
+      notesTitle: 'Private notes',
+      notesSub: 'Stored encrypted on your device only — never sent to any server.',
+      addNote: 'Add note',
+      noNotes: 'No notes yet',
+      noNotesSub: 'Add a private note, such as a reminder or a question for your doctor.',
+      noteTitle: 'Title',
+      noteBody: 'Text',
+      noteTitlePh: 'e.g. Questions before my appointment',
+      noteBodyPh: 'Write your note here…',
+      exportVault: 'Export a copy of my record',
+
+      cancel: 'Cancel',
+      save: 'Save',
+      delete: 'Delete',
+      close: 'Close',
+      back: 'Back',
+      next: 'Continue',
+      retry: 'Retry',
+      loading: 'Working…',
+      saving: 'Saving…',
+
+      confirmDeleteTitle: 'Confirm deletion',
+      confirmDeleteBody: 'Delete this note permanently?',
+      confirmYes: 'Yes, delete',
+
+      offlineTitle: 'Server not connected',
+      offlineBody: 'Your data was saved encrypted on this device only and was not sent to Raqeem or Sehhaty. Start the platform server to enable sync.',
+      offlineChip: 'Local mode',
+      online: 'Online',
+      checking: 'Checking…',
+      menu: 'Menu',
+
+      errRequired: 'This field is required',
+      errNid: 'National ID is 10 digits starting with 1',
+      errIqama: 'Iqama is 10 digits starting with 2',
+      errPass: 'Passport: 6–12 English letters/digits',
+      errPhone: 'Mobile is 10 digits starting with 05',
+      errDob: 'Invalid date',
+      errCitizenDoc: 'Citizens register with a national ID',
+      errPinShort: 'Access code must be at least 6 characters',
+      errPinLong: 'Access code is too long',
+      errPinMatch: 'The codes do not match',
+      errConsent: 'You must accept the privacy policy',
+      errDocType: 'Invalid document type',
+      errCategory: 'Invalid category',
+      errTooLong: 'Value is too long',
+      errInvalidPin: 'Document number or access code is incorrect',
+      errServer: 'Could not reach the server. Check that it is running.',
+      errGeneric: 'Something went wrong. Please try again.',
+      errNoCrypto: 'Your browser does not support the required encryption. Use a modern browser.',
+
+      copied: 'Copied',
+      saved: 'Saved',
+      noteAdded: 'Note added',
+      noteDeleted: 'Note deleted',
+      exported: 'Record exported',
+      registered: 'Registered successfully',
+      kioskReset: 'Session ended due to inactivity',
+
+      docTypeNid: 'National ID',
+      docTypeIqama: 'Iqama',
+      docTypePassport: 'Passport',
+    },
+  };
+
+  var ERROR_MAP = {
+    eRequired: 'errRequired',
+    eNid: 'errNid',
+    eIqama: 'errIqama',
+    ePass: 'errPass',
+    ePhone: 'errPhone',
+    eDob: 'errDob',
+    eCitizenDoc: 'errCitizenDoc',
+    ePinShort: 'errPinShort',
+    ePinLong: 'errPinLong',
+    eConsent: 'errConsent',
+    eDocType: 'errDocType',
+    eCategory: 'errCategory',
+    eTooLong: 'errTooLong',
+  };
+
+  var STORAGE_KEY = 'enaya:lang';
+  var lang = 'ar';
+
+  try {
+    var saved = global.localStorage.getItem(STORAGE_KEY);
+    if (saved === 'ar' || saved === 'en') lang = saved;
+  } catch (error) {
+    /* التخزين غير متاح — الافتراضي العربية */
+  }
+
+  function t(key) {
+    var pack = DICT[lang] || DICT.ar;
+    if (Object.prototype.hasOwnProperty.call(pack, key)) return pack[key];
+    if (Object.prototype.hasOwnProperty.call(DICT.ar, key)) return DICT.ar[key];
+    return key;
+  }
+
+  /** يترجم رمز خطأ قادماً من الخادم أو من الفحص المحلي */
+  function err(code) {
+    if (!code) return '';
+    var key = ERROR_MAP[code] || code;
+    return t(key);
+  }
+
+  function setLang(next) {
+    lang = next === 'en' ? 'en' : 'ar';
+    try {
+      global.localStorage.setItem(STORAGE_KEY, lang);
+    } catch (error) {
+      /* تجاهل */
+    }
+    return lang;
+  }
+
+  function toggle() {
+    return setLang(lang === 'ar' ? 'en' : 'ar');
+  }
+
+  global.EnayaI18n = {
+    t: t,
+    err: err,
+    setLang: setLang,
+    toggle: toggle,
+    get lang() {
+      return lang;
+    },
+    get dir() {
+      return lang === 'ar' ? 'rtl' : 'ltr';
+    },
+  };
+})(window);

@@ -1,163 +1,116 @@
-/* ============================================================
-   ملفاتي — Crypto layer
-   PBKDF2-SHA256 key derivation  +  AES-GCM content encryption
-   كل مفتاح مشتق من كلمة مرور المستخدم، ولا يُخزَّن أبداً.
-   ============================================================ */
+/* ==========================================================================
+   عناية — الطبقة التشفيرية
+   PBKDF2-SHA256 (180,000 دورة) + AES-256-GCM
+   لا يوجد أي مفتاح مكتوب في الكود — كل مفتاح يُشتق من رمز دخول المريض وقت التشغيل.
+   ========================================================================== */
 (function (global) {
   'use strict';
 
-  var subtle = (global.crypto && global.crypto.subtle) ? global.crypto.subtle : null;
-  var te = new TextEncoder();
-  var td = (typeof TextDecoder !== 'undefined') ? new TextDecoder() : null;
+  var subtle = global.crypto && global.crypto.subtle;
+  var encoder = new TextEncoder();
+  var decoder = new TextDecoder();
 
-  var ITERATIONS = 160000;   // PBKDF2 rounds
+  var ITERATIONS = 180000;
+  var KEY_BITS = 256;
   var SALT_BYTES = 16;
-  var IV_BYTES   = 12;       // GCM nonce
-  var KEY_BITS   = 256;
+  var IV_BYTES = 12;
 
-  /* ---------- byte / string helpers ---------- */
-  function toB64(bytes) {
-    var s = '';
-    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-    return btoa(s);
+  function supported() {
+    return !!subtle;
   }
-  function fromB64(b64) {
-    var s = atob(b64), out = new Uint8Array(s.length);
-    for (var i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+
+  function toBase64(bytes) {
+    var text = '';
+    for (var i = 0; i < bytes.length; i += 1) text += String.fromCharCode(bytes[i]);
+    return global.btoa(text);
+  }
+
+  function fromBase64(value) {
+    var text = global.atob(String(value));
+    var bytes = new Uint8Array(text.length);
+    for (var i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i);
+    return bytes;
+  }
+
+  function randomBytes(length) {
+    var bytes = new Uint8Array(length);
+    global.crypto.getRandomValues(bytes);
+    return bytes;
+  }
+
+  function toHex(bytes) {
+    var out = '';
+    for (var i = 0; i < bytes.length; i += 1) out += bytes[i].toString(16).padStart(2, '0');
     return out;
   }
-  function randomBytes(n) {
-    var b = new Uint8Array(n);
-    (global.crypto || global.msCrypto).getRandomValues(b);
-    return b;
-  }
-  function randomToken(n) {
-    return toB64(randomBytes(n || 24)).replace(/[+/=]/g, '').slice(0, 40);
-  }
 
-  /* ---------- availability ---------- */
-  function supported() {
-    return !!(subtle && global.btoa && global.atob && td);
-  }
-
-  /* ---------- key derivation ---------- */
-  async function deriveBits(password, saltB64) {
-    if (!supported()) throw new Error('WEAK_ENV');
-    var base = await subtle.importKey(
-      'raw', te.encode(String(password)), 'PBKDF2', false, ['deriveBits']
-    );
+  async function deriveRaw(pin, salt) {
+    var baseKey = await subtle.importKey('raw', encoder.encode(String(pin)), 'PBKDF2', false, ['deriveBits']);
     var bits = await subtle.deriveBits(
-      { name: 'PBKDF2', salt: fromB64(saltB64), iterations: ITERATIONS, hash: 'SHA-256' },
-      base, KEY_BITS
+      { name: 'PBKDF2', salt: salt, iterations: ITERATIONS, hash: 'SHA-256' },
+      baseKey,
+      KEY_BITS
     );
     return new Uint8Array(bits);
   }
 
-  async function deriveKey(password, saltB64) {
-    if (!supported()) throw new Error('WEAK_ENV');
-    var bits = await deriveBits(password, saltB64);
-    return subtle.importKey('raw', bits, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+  /** يشتق مفتاح AES-GCM من رمز الدخول والملح */
+  async function deriveKey(pin, saltB64) {
+    var raw = await deriveRaw(pin, fromBase64(saltB64));
+    return subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
   }
 
-  /* SHA-256 عام — يُستخدم لبناء مُتحقِّق حتمي من كلمة المرور */
-  async function digest(bytes) {
-    if (!supported()) throw new Error('WEAK_ENV');
-    return new Uint8Array(await subtle.digest('SHA-256', bytes));
+  /** بصمة حتمية للتحقق من رمز الدخول دون حفظه أو تشفير قيمة عشوائية */
+  async function verifier(pin, saltB64) {
+    var raw = await deriveRaw(pin, fromBase64(saltB64));
+    var digest = await subtle.digest('SHA-256', raw);
+    return toBase64(new Uint8Array(digest));
   }
 
-  /**
-   * مُتحقِّق حتمي (deterministic) لبصمة كلمة المرور.
-   * ⚠ لا يُستخدم أي تشفير بتشفير عشوائي هنا، وإلا فشل الدخول دائماً.
-   */
-  async function verifier(password, saltB64) {
-    var bits = await deriveBits(password, saltB64);
-    var label = te.encode('|mfy:verifier:v1|');
-    var buf = new Uint8Array(bits.length + label.length);
-    buf.set(bits, 0);
-    buf.set(label, bits.length);
-    return toB64(await digest(buf));
-  }
-
-  function newSalt() { return toB64(randomBytes(SALT_BYTES)); }
-
-  /* ---------- content encryption ----------
-     Payload shape stored in localStorage:
-       { v:1, s:<iv b64>, d:<ciphertext b64> }  */
-  async function encryptText(key, plain) {
-    if (!key) return { v: 1, p: String(plain) };        // degraded mode (no WebCrypto)
+  async function encryptString(text, key) {
     var iv = randomBytes(IV_BYTES);
-    var ct = await subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, te.encode(String(plain)));
-    return { v: 1, s: toB64(iv), d: toB64(new Uint8Array(ct)) };
+    var cipher = await subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, encoder.encode(text));
+    return { v: 1, iv: toBase64(iv), d: toBase64(new Uint8Array(cipher)) };
   }
 
-  async function decryptText(key, payload) {
-    if (!payload) return '';
-    if (typeof payload === 'string') return payload;     // legacy plaintext
-    if (payload.p !== undefined) return payload.p;        // degraded mode
-    if (!key) throw new Error('LOCKED');
-    try {
-      var pt = await subtle.decrypt(
-        { name: 'AES-GCM', iv: fromB64(payload.s) }, key, fromB64(payload.d)
-      );
-      return td.decode(pt);
-    } catch (e) { throw new Error('DECRYPT_FAILED'); }
+  async function decryptString(payload, key) {
+    if (!payload || payload.v !== 1) throw new Error('BAD_PAYLOAD');
+    var iv = fromBase64(payload.iv);
+    var data = fromBase64(payload.d);
+    var plain = await subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, data);
+    return decoder.decode(plain);
   }
 
-  /* Nonce-safe: encrypt base64 blobs (uploaded file bodies) */
-  async function encryptBlob(key, b64) { return encryptText(key, b64); }
-  async function decryptBlob(key, payload) { return decryptText(key, payload); }
-
-  /* ---------- constant-time-ish compare ---------- */
-  function secureEqual(a, b) {
-    a = String(a || ''); b = String(b || '');
-    if (a.length !== b.length) return false;
-    var r = 0;
-    for (var i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
-    return r === 0;
+  function newSalt() {
+    return toBase64(randomBytes(SALT_BYTES));
   }
 
-  /* ---------- lightweight fingerprint (never used for auth) ---------- */
-  async function fingerprint(str) {
-    if (subtle) {
-      var h = await subtle.digest('SHA-256', te.encode(String(str)));
-      return toB64(new Uint8Array(h)).slice(0, 22);
-    }
-    var hash = 5381;
-    for (var i = 0; i < str.length; i++) hash = ((hash << 5) + hash + str.charCodeAt(i)) >>> 0;
-    return 'fp' + hash.toString(36);
+  function newId() {
+    return 'u_' + Date.now().toString(36) + '_' + toHex(randomBytes(5));
   }
 
-  /* Simple display-only password score (0..4) */
-  function passwordScore(pw) {
-    pw = String(pw || '');
-    if (!pw) return 0;
-    var s = 0;
-    if (pw.length >= 8) s++;
-    if (pw.length >= 12) s++;
-    if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) s++;
-    if (/\d/.test(pw) && /[^A-Za-z0-9]/.test(pw)) s++;
-    if (pw.length < 6) s = Math.min(s, 1);
-    return Math.min(s, 4);
+  /** بصمة الوثيقة — تسمح بالبحث عن الحساب دون تخزين رقم الوثيقة صراحةً */
+  async function fingerprint(docType, docNo) {
+    var digest = await subtle.digest('SHA-256', encoder.encode(docType + ':' + docNo));
+    return toHex(new Uint8Array(digest));
   }
 
-  global.MFCrypto = {
+  /** إخفاء رقم الوثيقة للعرض */
+  function mask(value) {
+    var text = String(value || '');
+    if (text.length <= 4) return text;
+    return text.slice(0, 1) + '•'.repeat(text.length - 3) + text.slice(-2);
+  }
+
+  global.EnayaCrypto = {
     supported: supported,
     deriveKey: deriveKey,
-    deriveBits: deriveBits,
-    digest: digest,
     verifier: verifier,
+    encryptString: encryptString,
+    decryptString: decryptString,
     newSalt: newSalt,
-    encryptText: encryptText,
-    decryptText: decryptText,
-    encryptBlob: encryptBlob,
-    decryptBlob: decryptBlob,
-    toB64: toB64,
-    fromB64: fromB64,
-    randomBytes: randomBytes,
-    randomToken: randomToken,
-    secureEqual: secureEqual,
+    newId: newId,
     fingerprint: fingerprint,
-    passwordScore: passwordScore,
-    ITERATIONS: ITERATIONS
+    mask: mask,
   };
 })(window);

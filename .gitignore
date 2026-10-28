@@ -18,3 +18,9 @@ desktop.ini
 
 # الاعتماديات
 node_modules/
+
+# قاعدة بيانات الخادم (محلية — لا تُرفع)
+server/data/
+*.db
+*.db-wal
+*.db-shm

@@ -1,1515 +1,1620 @@
-/* ============================================================
-   ملفاتي — Application controller
-   ============================================================ */
-(function (global) {
+/* ==========================================================================
+   عناية — وحدة التحكم
+   العروض، التوجيه، الأحداث، وربط الواجهة بالخادم أو بالمخزن المحلي.
+   ========================================================================== */
+(function () {
   'use strict';
 
-  var C = global.MFCrypto, DB = global.MFDB, A = global.MFAuth, U = global.MFUI;
+  var T = window.EnayaI18n;
+  var C = window.EnayaCrypto;
+  var Store = window.EnayaStore;
+  var Api = window.EnayaApi;
 
-  /* ---------------- helpers ---------------- */
-  var $  = function (s, r) { return (r || document).querySelector(s); };
-  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  var t = T.t;
+  var errText = T.err;
 
-  function esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  // ─── أدوات مساعدة ───────────────────────────────────────────────────────────
+
+  function $(selector, root) {
+    return (root || document).querySelector(selector);
   }
-  function icon(id, cls) {
-    return '<svg class="' + (cls || '') + '" aria-hidden="true"><use href="#' + id + '"/></svg>';
-  }
-  function fmtBytes(n) { return DB.formatBytes(n); }
 
-  function fmtDate(ts, withTime) {
-    if (!ts) return '—';
+  function esc(value) {
+    return String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  }
+
+  function icon(name, cls) {
+    return '<svg class="' + (cls || 'ic') + '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+  }
+
+  function toLatinDigits(value) {
+    return String(value || '')
+      .replace(/[٠-٩]/g, function (d) { return String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)); })
+      .replace(/[۰-۹]/g, function (d) { return String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)); });
+  }
+
+  function normalizeDoc(type, raw) {
+    var value = toLatinDigits(raw).trim();
+    if (type === 'passport') return value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    return value.replace(/\D/g, '');
+  }
+
+  function normalizePhone(raw) {
+    var value = toLatinDigits(raw).replace(/\D/g, '');
+    if (value.indexOf('00966') === 0) value = '0' + value.slice(5);
+    else if (value.indexOf('966') === 0) value = '0' + value.slice(3);
+    return value;
+  }
+
+  function toast(message, kind) {
+    var el = $('#toast');
+    if (!el) return;
+    el.textContent = message;
+    el.className = 'toast show' + (kind ? ' toast--' + kind : '');
+    clearTimeout(el._timer);
+    el._timer = setTimeout(function () {
+      el.className = 'toast' + (kind ? ' toast--' + kind : '');
+    }, 3200);
+  }
+
+  // ─── النافذة المنبثقة ───────────────────────────────────────────────────────
+
+  function openModal(options) {
+    var modal = $('#modal');
+    $('#modalTitle').textContent = options.title || '';
+    $('#modalBody').innerHTML = options.body || '';
+
+    var foot = $('#modalFoot');
+    foot.innerHTML = (options.actions || [])
+      .map(function (action, index) {
+        return (
+          '<button class="btn ' + (action.variant || 'btn--soft') + '" type="button" data-modal-action="' +
+          index + '">' + esc(action.label) + '</button>'
+        );
+      })
+      .join('');
+
+    (options.actions || []).forEach(function (action, index) {
+      var btn = foot.querySelector('[data-modal-action="' + index + '"]');
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        if (action.onClick) action.onClick();
+        if (action.close !== false) closeModal();
+      });
+    });
+
+    modal.hidden = false;
+    var first = modal.querySelector('input, textarea, .modal__foot .btn');
+    if (first) first.focus();
+  }
+
+  function closeModal() {
+    $('#modal').hidden = true;
+    $('#modalBody').innerHTML = '';
+    $('#modalFoot').innerHTML = '';
+  }
+
+  // ─── التنسيق ────────────────────────────────────────────────────────────────
+
+  function formatDate(iso) {
+    if (!iso) return '—';
+    var date = new Date(iso);
+    if (isNaN(date.getTime())) return '—';
+    var locale = T.lang === 'ar' ? 'ar-SA-u-ca-gregory-nu-latn' : 'en-GB';
     try {
-      var d = new Date(ts);
-      var opts = { year: 'numeric', month: 'short', day: 'numeric' };
-      if (withTime) { opts.hour = '2-digit'; opts.minute = '2-digit'; }
-      return new Intl.DateTimeFormat('ar-EG', opts).format(d);
-    } catch (e) { return new Date(ts).toLocaleDateString(); }
-  }
-  function relTime(ts) {
-    var s = Math.floor((Date.now() - ts) / 1000);
-    if (s < 60) return 'الآن';
-    if (s < 3600) return 'قبل ' + Math.floor(s / 60) + ' د';
-    if (s < 86400) return 'قبل ' + Math.floor(s / 3600) + ' س';
-    if (s < 2592000) return 'قبل ' + Math.floor(s / 86400) + ' يوم';
-    return fmtDate(ts);
-  }
-  function uid(p) { return DB.uid(p); }
-
-  function extOf(name) {
-    var m = /\.([a-z0-9]{1,7})$/i.exec(String(name || ''));
-    return m ? m[1].toLowerCase() : '';
-  }
-
-  var KIND = {
-    image: ['png','jpg','jpeg','gif','webp','svg','bmp','ico','avif'],
-    video: ['mp4','webm','mkv','mov','avi','m4v'],
-    audio: ['mp3','wav','ogg','m4a','flac','aac'],
-    pdf:   ['pdf'],
-    doc:   ['doc','docx','odt','rtf','txt','md','csv','ppt','pptx','xls','xlsx'],
-    zip:   ['zip','rar','7z','tar','gz','bz2']
-  };
-  function kindOf(file) {
-    if (file.kind) return file.kind;
-    var e = extOf(file.name);
-    if (file.mime && file.mime.indexOf('image/') === 0) return 'image';
-    if (file.mime && file.mime.indexOf('video/') === 0) return 'video';
-    if (file.mime && file.mime.indexOf('audio/') === 0) return 'audio';
-    for (var k in KIND) if (KIND[k].indexOf(e) > -1) return k;
-    return 'other';
-  }
-  var KIND_ICON = { image:'i-image', video:'i-video', audio:'i-music', pdf:'i-file', doc:'i-note', zip:'i-archive', other:'i-file' };
-  var KIND_LABEL = { image:'صورة', video:'فيديو', audio:'صوت', pdf:'PDF', doc:'مستند', zip:'أرشيف', other:'ملف' };
-  var MIME = { image:'image/*', video:'video/*', audio:'audio/*', pdf:'application/pdf',
-               doc:'text/*,application/msword,application/vnd.openxmlformats-officedocument.*', zip:'application/zip' };
-
-  function typeLabel(f) {
-    var k = kindOf(f);
-    if (k !== 'other') return KIND_LABEL[k];
-    var e = extOf(f.name);
-    return e ? e.toUpperCase() : 'ملف';
-  }
-
-  /* ---------------- app state ---------------- */
-  var state = {
-    view: 'dashboard',
-    owner: null,
-    data: { files: [], notes: [] },
-    query: '',
-    filter: 'all',
-    sort: 'newest',
-    layout: 'grid',
-    busy: false
-  };
-
-  /* ============================================================
-     DATA ACCESS  (كل عملية تمرّ من هنا — العزل مضمون)
-     ============================================================ */
-  function owner() {
-    var uidS = A.getSessionUserId();
-    if (!uidS) throw new Error(A.errors.NO_SESSION);
-    return uidS;
-  }
-
-  function load() {
-    state.data = A.isAuthed() ? DB.loadUserData(owner()) : { files: [], notes: [] };
-    state.owner = A.isAuthed() ? A.getSessionUserId() : null;
-    // حفظ التفضيلات محلياً داخل بيانات المستخدم
-    if (state.data.prefs && state.data.prefs.layout) state.layout = state.data.prefs.layout;
-    hydrate();
-    return state.data;
-  }
-
-  /**
-   * حارس العزل على مستوى الواجهة:
-   * إن تغيّر مالك الجلسة (خروج مستخدم ودخول آخر) نُعيد قراءة بياناته فوراً،
-   * فلا تبقى أي أثر لبيانات المستخدم السابق في DOM.
-   */
-  function ensureOwner() {
-    if (!A.isAuthed()) { state.owner = null; return false; }
-    var cur = A.getSessionUserId();
-    if (state.owner === cur) return true;
-    load();
-    hydrate().then(function () {
-      if (A.isAuthed() && state.owner === A.getSessionUserId()) render();
-    });
-    return true;
-  }
-
-  /* ------------------------------------------------------------
-     hydrate(): فك تشفير العرض إلى ذاكرة داخل الجدول فقط
-     هذه الحقول (_plain / _thumbUrl) لا تُكتب في localStorage أبداً
-     ------------------------------------------------------------ */
-  function hydrate() {
-    var key = A.getDataKey();
-    if (!key || !state.data) return Promise.resolve();
-    var jobs = [];
-
-    (state.data.notes || []).forEach(function (n) {
-      if (n._plain != null) return;
-      if (!n.content) { n._plain = ''; return; }
-      jobs.push(C.decryptText(key, n.content).then(function (t) {
-        n._plain = t;
-      }).catch(function () { n._plain = '⚠ تعذّر فك تشفير هذه الملاحظة'; }));
-    });
-
-    (state.data.files || []).forEach(function (f) {
-      if (f._thumbUrl != null) return;
-      if (!f.thumb) return;
-      if (typeof f.thumb === 'object') {
-        jobs.push(C.decryptText(key, f.thumb).then(function (t) {
-          f._thumbUrl = t;
-        }).catch(function () { f._thumbUrl = null; }));
-      } else {
-        f._thumbUrl = f.thumb;   // سجل قديم غير مشفّر
-      }
-    });
-
-    return Promise.all(jobs);
-  }
-
-  /* إخفاء النص المصغّر من الذاكرة عند القفل */
-  function scrubHydration() {
-    (state.data.notes || []).forEach(function (n) { n._plain = undefined; });
-    (state.data.files || []).forEach(function (f) { f._thumbUrl = undefined; });
-  }
-
-  function persist() {
-    try {
-      var snap = JSON.parse(JSON.stringify(state.data));
-      // لا نكتب أبداً الحقول المشفّرة في الذاكرة إلى القاعدة
-      (snap.notes || []).forEach(function (n) { delete n._plain; });
-      (snap.files || []).forEach(function (f) { delete f._thumbUrl; });
-      DB.saveUserData(owner(), snap);
-      refreshStorageUI();
-      return true;
-    } catch (e) {
-      U.toast('مساحة التخزين ممتلئة! احذف بعض الملفات أو نزّل الملاحظات أولاً.', 'err');
-      return false;
+      return new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'long', day: 'numeric' }).format(date);
+    } catch (error) {
+      return date.toISOString().slice(0, 10);
     }
   }
 
-  function activeFiles() { return state.data.files.filter(function (f) { return !f.trashed; }); }
-  function trashed() {
-    return state.data.files.filter(function (f) { return f.trashed; })
-      .concat(state.data.notes.filter(function (n) { return n.trashed; }));
-  }
-  function activeNotes() { return state.data.notes.filter(function (n) { return !n.trashed; }); }
-
-  function matches(f) {
-    if (!state.query) return true;
-    var q = state.query.toLowerCase();
-    return String(f.name || '').toLowerCase().indexOf(q) > -1;
-  }
-  function matchesNote(n) {
-    if (!state.query) return true;
-    var q = state.query.toLowerCase();
-    return (String(n.title || '') + ' ' + String(n._plain || '')).toLowerCase().indexOf(q) > -1;
+  function formatTime(iso) {
+    if (!iso) return '—';
+    var date = new Date(iso);
+    if (isNaN(date.getTime())) return '—';
+    try {
+      return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(date);
+    } catch (error) {
+      return '—';
+    }
   }
 
-  function sortList(arr) {
-    var s = state.sort;
-    return arr.slice().sort(function (a, b) {
-      if (s === 'newest') return b.updatedAt - a.updatedAt;
-      if (s === 'oldest') return a.updatedAt - b.updatedAt;
-      if (s === 'name')   return String(a.name || a.title).localeCompare(String(b.name || b.title), 'ar');
-      if (s === 'size')   return (b.size || 0) - (a.size || 0);
-      return 0;
-    });
+  /** تاريخ ميلاد محفوظ بصيغة YYYY-MM-DD — يُعرض بالتقويم الميلادي */
+  function formatBirthDate(value) {
+    if (!value) return '—';
+    var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value));
+    if (!match) return String(value);
+    var date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    var locale = T.lang === 'ar' ? 'ar-u-ca-gregory-nu-latn' : 'en-GB';
+    try {
+      return new Intl.DateTimeFormat(locale, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        timeZone: 'UTC',
+      }).format(date);
+    } catch (error) {
+      return value;
+    }
   }
 
-  function visibleFiles() {
-    var list = activeFiles().filter(matches);
-    if (state.filter !== 'all') list = list.filter(function (f) { return kindOf(f) === state.filter; });
-    if (state.filter === 'star') list = activeFiles().filter(function (f) { return f.star && matches(f); });
-    return sortList(list);
+  /** يوحّد عرض الجوال على الصيغة المحلية 05XXXXXXXX */
+  function formatPhone(value) {
+    var digits = String(value || '').replace(/\D/g, '');
+    if (digits.indexOf('00966') === 0) digits = '0' + digits.slice(5);
+    else if (digits.indexOf('966') === 0) digits = '0' + digits.slice(3);
+    return digits || '—';
   }
 
-  /* ============================================================
-     ROUTER
-     ============================================================ */
-  var ROUTES = ['dashboard','files','notes','trash','account'];
+  var DOC_LABEL = { nid: 'docTypeNid', iqama: 'docTypeIqama', passport: 'docTypePassport' };
+  var CATEGORY_LABEL = { citizen: 'catCitizen', domestic: 'catDomestic', insured: 'catInsured' };
 
-  function go(view) {
-    if (ROUTES.indexOf(view) < 0) view = 'dashboard';
-    state.view = view;
-    if (location.hash !== '#/' + view) location.hash = '#/' + view;
-    render();
-    document.body.classList.remove('is-nav-open');
-    var app = $('#appScreen'); if (app) app.classList.remove('is-nav');
-    var sc = $('#scrim'); if (sc) sc.hidden = true;
+  function docLabel(type) {
+    return t(DOC_LABEL[type] || 'docTypeNid');
   }
 
-  function readHash() {
-    var h = (location.hash || '').replace(/^#\/?/, '').split('?')[0];
-    return ROUTES.indexOf(h) > -1 ? h : 'dashboard';
+  function categoryLabel(category) {
+    return t(CATEGORY_LABEL[category] || 'catCitizen');
   }
 
-  /* ============================================================
-     RENDER — shell
-     ============================================================ */
-  function render() {
-    if (!A.isAuthed()) return;
-    if (!ensureOwner()) return;
-    if (!state.data.files) load();
-
-    $$('.nav__item').forEach(function (b) {
-      b.classList.toggle('is-active', b.dataset.nav === state.view);
-    });
-
-    var counts = {
-      files: activeFiles().length,
-      notes: activeNotes().length,
-      trash: trashed().length
+  function statusChip(status) {
+    var map = {
+      ok: { cls: 'chip--ok', label: t('syncOk') },
+      fail: { cls: 'chip--fail', label: t('syncFail') },
+      wait: { cls: 'chip--warn', label: t('syncWait') },
+      offline: { cls: 'chip--warn', label: t('syncOffline') },
     };
-    $$('[data-count]').forEach(function (el) {
-      var n = counts[el.dataset.count] || 0;
-      el.textContent = n;
-      el.hidden = n === 0 && el.dataset.count !== 'files';
+    var item = map[status] || map.wait;
+    return '<span class="chip ' + item.cls + '"><i class="dot"></i>' + esc(item.label) + '</span>';
+  }
+
+  var VISIT_STATUS = { waiting: 'stWaiting', called: 'stCalled', done: 'stDone', cancelled: 'stCancelled' };
+
+  // ─── الحالة ─────────────────────────────────────────────────────────────────
+
+  function freshKiosk() {
+    return {
+      step: 1,
+      category: null,
+      docType: 'nid',
+      docNo: '',
+      cal: 'greg',
+      dob: { d: '', m: '', y: '' },
+      phone: '',
+      insurer: '',
+      policy: '',
+      pin: '',
+      pin2: '',
+      consent: false,
+      errors: {},
+      result: null,
+      session: null,
+      busy: false,
+    };
+  }
+
+  var state = {
+    screen: 'home',
+    kiosk: freshKiosk(),
+    login: { docType: 'nid', docNo: '', pin: '', error: '', busy: false },
+    portal: null,
+  };
+
+  // ─── الأجزاء المشتركة ───────────────────────────────────────────────────────
+
+  function brandMarkup() {
+    return (
+      '<a class="brand" href="#/" data-act="home" aria-label="' + esc(t('brand')) + '">' +
+      '<span class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>' +
+      '<span><span class="brand__name">' + esc(t('brand')) + '</span>' +
+      '<span class="brand__tag">' + esc(t('brandTag')) + '</span></span>' +
+      '</a>'
+    );
+  }
+
+  function langButton() {
+    return (
+      '<button class="iconbtn" type="button" data-act="lang" aria-label="' + esc(t('langTitle')) + '" title="' + esc(t('langTitle')) + '">' +
+      icon('globe') + '</button>'
+    );
+  }
+
+  function connectionChip() {
+    if (!Api.checked) {
+      return '<span class="chip" id="connChip">' + esc(t('checking')) + '</span>';
+    }
+    if (Api.online) {
+      return '<span class="chip chip--ok" id="connChip"><i class="dot"></i>' + esc(t('online')) + '</span>';
+    }
+    return '<span class="chip chip--warn" id="connChip"><i class="dot"></i>' + esc(t('offlineChip')) + '</span>';
+  }
+
+  function toggleMenu() {
+    var nav = $('#topNav');
+    var button = $('[data-act="menu"]');
+    if (!nav || !button) return;
+    var open = nav.classList.toggle('is-open');
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function closeMenu() {
+    var nav = $('#topNav');
+    var button = $('[data-act="menu"]');
+    if (!nav || !button) return;
+    nav.classList.remove('is-open');
+    button.setAttribute('aria-expanded', 'false');
+  }
+
+  function topbar(options) {
+    var opts = options || {};
+    var links = [
+      { key: 'home', label: t('navHome'), screen: 'home' },
+      { key: 'kiosk', label: t('navRegister'), screen: 'kiosk' },
+      { key: 'login', label: t('navPortal'), screen: 'login' },
+    ];
+
+    var items = links
+      .map(function (link) {
+        var current = state.screen === link.screen ? ' aria-current="page"' : '';
+        return '<a class="top__link" href="#/' + link.key + '" data-act="go" data-screen="' + link.screen + '"' + current + '>' + esc(link.label) + '</a>';
+      })
+      .join('');
+
+    return (
+      '<header class="top"><div class="wrap top__in">' +
+      brandMarkup() +
+      '<nav class="top__nav" id="topNav" aria-label="' + esc(t('navHome')) + '">' + items + '</nav>' +
+      '<div class="top__spacer"></div>' +
+      '<div class="top__actions">' +
+      connectionChip() +
+      langButton() +
+      (opts.hideCta
+        ? ''
+        : '<a class="btn btn--sm top__cta" href="#/register" data-act="go" data-screen="kiosk">' + esc(t('heroCta1')) + '</a>') +
+      '<button class="iconbtn top__menu" type="button" data-act="menu" aria-label="' + esc(t('menu')) + '" aria-controls="topNav" aria-expanded="false">' + icon('menu') + '</button>' +
+      '</div>' +
+      '</div></header>'
+    );
+  }
+
+  function footer() {
+    return (
+      '<footer class="foot"><div class="wrap">' +
+      '<div class="foot__in">' +
+      '<div class="foot__brand">' + brandMarkup() + '<p>' + esc(t('footAbout')) + '</p></div>' +
+      '<div class="foot__cols">' +
+      '<div class="foot__col"><p class="foot__col-h">' + esc(t('footPlatform')) + '</p>' +
+      '<a href="#/register" data-act="go" data-screen="kiosk">' + esc(t('navRegister')) + '</a>' +
+      '<a href="#/portal" data-act="go" data-screen="login">' + esc(t('navPortal')) + '</a>' +
+      '</div>' +
+      '<div class="foot__col"><p class="foot__col-h">' + esc(t('footSupport')) + '</p>' +
+      '<a href="#/" data-act="home">' + esc(t('footPrivacy')) + '</a>' +
+      '<a href="#/" data-act="home">' + esc(t('footTerms')) + '</a>' +
+      '<a href="#/" data-act="home">' + esc(t('footContact')) + '</a>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="foot__base"><span>© ' + new Date().getFullYear() + ' ' + esc(t('brand')) + ' — ' + esc(t('footRights')) + '</span>' +
+      '<span>' + esc(t('footBuilt')) + '</span></div>' +
+      '</div></footer>'
+    );
+  }
+
+  // ─── الصفحة الرئيسية ────────────────────────────────────────────────────────
+
+  function viewHome() {
+    var features = [
+      { ic: 'clock', t: 'feat1t', d: 'feat1d' },
+      { ic: 'shield', t: 'feat2t', d: 'feat2d' },
+      { ic: 'hospital', t: 'feat3t', d: 'feat3d' },
+      { ic: 'user', t: 'feat4t', d: 'feat4d' },
+    ];
+
+    var steps = [
+      { t: 'how1t', d: 'how1d' },
+      { t: 'how2t', d: 'how2d' },
+      { t: 'how3t', d: 'how3d' },
+    ];
+
+    return (
+      topbar() +
+      '<main id="main">' +
+      '<section class="hero"><div class="wrap hero__in">' +
+      '<div class="reveal">' +
+      '<span class="eyebrow"><i class="dot"></i>' + esc(t('heroBadge')) + '</span>' +
+      '<h1>' + esc(t('heroTitleA')) + ' <em>' + esc(t('heroTitleEm')) + '</em></h1>' +
+      '<p class="hero__lead">' + esc(t('heroLead')) + '</p>' +
+      '<div class="hero__cta">' +
+      '<a class="btn btn--lg" href="#/register" data-act="go" data-screen="kiosk">' + icon('plus', 'ic') + esc(t('heroCta1')) + '</a>' +
+      '<a class="btn btn--lg btn--outline" href="#/portal" data-act="go" data-screen="login">' + icon('lock', 'ic') + esc(t('heroCta2')) + '</a>' +
+      '</div>' +
+      '<div class="hero__trust">' +
+      '<div class="trust">' + icon('clock', 'ic') + '<div><b>' + esc(t('trust1t')) + '</b><span>' + esc(t('trust1s')) + '</span></div></div>' +
+      '<div class="trust">' + icon('hospital', 'ic') + '<div><b>' + esc(t('trust2t')) + '</b><span>' + esc(t('trust2s')) + '</span></div></div>' +
+      '<div class="trust">' + icon('shield', 'ic') + '<div><b>' + esc(t('trust3t')) + '</b><span>' + esc(t('trust3s')) + '</span></div></div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="showcase reveal">' +
+      '<div class="showcase__glow"></div>' +
+      '<div class="kiosk-card">' +
+      '<div class="kiosk-card__bar"><b>' + esc(t('brand')) + '</b><div class="dots"><i></i><i></i><i></i></div></div>' +
+      '<div class="kiosk-card__body">' +
+      '<div class="queue"><div class="queue__label">' + esc(t('showLabel')) + '</div><div class="queue__num">104</div></div>' +
+      '<div class="sync-list">' +
+      '<div class="sync-row"><span class="sync-row__name">' + icon('hospital', 'ic ic--sm') + esc(t('raqeem')) + '</span>' + statusChip('ok') + '</div>' +
+      '<div class="sync-row"><span class="sync-row__name">' + icon('steth', 'ic ic--sm') + esc(t('sehhaty')) + '</span>' + statusChip('ok') + '</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="float-card">' +
+      '<span class="float-card__ic">' + icon('shield', 'ic') + '</span>' +
+      '<div><b>' + esc(t('showNote')) + '</b><span>' + esc(t('showNoteSub')) + '</span></div>' +
+      '</div>' +
+      '</div>' +
+      '</div></section>' +
+
+      '<section class="section section--tint"><div class="wrap">' +
+      '<div class="section__head"><h2>' + esc(t('featTitle')) + '</h2><p>' + esc(t('featLead')) + '</p></div>' +
+      '<div class="grid grid--4">' +
+      features
+        .map(function (f) {
+          return (
+            '<article class="feature"><span class="feature__ic">' + icon(f.ic, 'ic') + '</span>' +
+            '<h3>' + esc(t(f.t)) + '</h3><p>' + esc(t(f.d)) + '</p></article>'
+          );
+        })
+        .join('') +
+      '</div></div></section>' +
+
+      '<section class="section"><div class="wrap">' +
+      '<div class="section__head"><h2>' + esc(t('howTitle')) + '</h2></div>' +
+      '<div class="steps-list">' +
+      steps
+        .map(function (s, index) {
+          return (
+            '<div class="step-card"><div class="step-card__n">' + (index + 1) + '</div>' +
+            '<h3>' + esc(t(s.t)) + '</h3><p>' + esc(t(s.d)) + '</p></div>'
+          );
+        })
+        .join('') +
+      '</div></div></section>' +
+
+      '<section class="section" style="padding-top:0"><div class="wrap">' +
+      '<div class="cta-band"><div><h2>' + esc(t('ctaTitle')) + '</h2><p>' + esc(t('ctaLead')) + '</p></div>' +
+      '<a class="btn btn--lg btn--white" href="#/register" data-act="go" data-screen="kiosk">' + esc(t('ctaBtn')) + '</a></div>' +
+      '</div></section>' +
+      '</main>' +
+      footer()
+    );
+  }
+
+  // ─── الكشك: الغلاف ──────────────────────────────────────────────────────────
+
+  function kioskShell(inner) {
+    return (
+      '<div class="kiosk">' +
+      '<div class="wrap kiosk__top">' + brandMarkup() +
+      '<div class="top__spacer"></div>' +
+      connectionChip() +
+      langButton() +
+      '<button class="iconbtn" type="button" data-act="home" aria-label="' + esc(t('close')) + '">' + icon('close') + '</button>' +
+      '</div>' +
+      '<main class="kiosk__body" id="main"><div class="wrap kiosk__panel">' + inner + '</div></main>' +
+      '</div>'
+    );
+  }
+
+  function progressBar(step) {
+    var labels = [t('step1'), t('step2'), t('step3')];
+    var cells = '';
+    for (var i = 1; i <= 3; i += 1) {
+      var cls = i < step ? ' is-done' : i === step ? ' is-on' : '';
+      cells += '<div class="progress__step' + cls + '"></div>';
+    }
+    var labelMarkup = labels
+      .map(function (label, index) {
+        var current = index + 1 === step ? ' style="color:var(--brand-700)"' : '';
+        return '<span' + current + '>' + esc(label) + '</span>';
+      })
+      .join('');
+    return '<div class="progress">' + cells + '</div><div class="progress__label">' + labelMarkup + '</div>';
+  }
+
+  function fieldError(key) {
+    var code = state.kiosk.errors[key];
+    return '<span class="field__error" id="err-' + key + '">' + (code ? esc(errText(code)) : '') + '</span>';
+  }
+
+  // ─── الكشك: الخطوة 1 ────────────────────────────────────────────────────────
+
+  function kioskStep1() {
+    var choices = [
+      { cat: 'citizen', ic: 'id', t: 'catCitizen', d: 'catCitizenSub' },
+      { cat: 'domestic', ic: 'user', t: 'catDomestic', d: 'catDomesticSub' },
+      { cat: 'insured', ic: 'shield', t: 'catInsured', d: 'catInsuredSub' },
+    ];
+
+    return (
+      '<div class="kiosk__head"><h1>' + esc(t('whoTitle')) + '</h1><p>' + esc(t('whoSub')) + '</p></div>' +
+      '<div class="card"><div class="card__body">' +
+      choices
+        .map(function (c) {
+          return (
+            '<button class="choice" type="button" data-act="pick-category" data-cat="' + c.cat + '">' +
+            '<span class="choice__ic">' + icon(c.ic, 'ic') + '</span>' +
+            '<span><b>' + esc(t(c.t)) + '</b><span>' + esc(t(c.d)) + '</span></span>' +
+            '<span class="choice__go">' + icon('arrow', 'ic') + '</span>' +
+            '</button>'
+          );
+        })
+        .join('') +
+      '</div></div>'
+    );
+  }
+
+  // ─── الكشك: الخطوة 2 ────────────────────────────────────────────────────────
+
+  function kioskStep2() {
+    var k = state.kiosk;
+    var locked = k.category === 'citizen' ? 'nid' : k.category === 'domestic' ? 'iqama' : null;
+
+    var typeField = locked
+      ? '<div class="field"><span class="field__label">' + esc(t('docType')) + '</span>' +
+        '<div class="chip chip--brand" style="padding:11px 16px;font-size:14px">' + esc(docLabel(locked)) + '</div></div>'
+      : '<div class="field"><label for="fkDocType">' + esc(t('docType')) + '</label>' +
+        '<select class="select" id="fkDocType">' +
+        ['nid', 'iqama', 'passport']
+          .map(function (type) {
+            return '<option value="' + type + '"' + (k.docType === type ? ' selected' : '') + '>' + esc(docLabel(type)) + '</option>';
+          })
+          .join('') +
+        '</select></div>';
+
+    var isPassport = k.docType === 'passport';
+
+    return (
+      '<div class="kiosk__head"><h1>' + esc(t('docTitle')) + '</h1><p>' + esc(t('docSub')) + '</p></div>' +
+      '<div class="card"><div class="card__body">' +
+      typeField +
+      '<div class="field"><label for="fkDocNo">' + esc(t('docNo')) + '</label>' +
+      '<input class="input input--ltr" id="fkDocNo" autocomplete="off" ' +
+      (isPassport ? 'inputmode="text" maxlength="12"' : 'inputmode="numeric" maxlength="10"') +
+      ' placeholder="' + esc(t('docNoPh')) + '" value="' + esc(k.docNo) + '"' +
+      (k.errors.docNo ? ' aria-invalid="true"' : '') + '>' +
+      fieldError('docNo') + '</div>' +
+      '<div class="bar bar--split">' +
+      '<button class="btn btn--ghost" type="button" data-act="kiosk-back">' + esc(t('back')) + '</button>' +
+      '<button class="btn" type="button" data-act="kiosk-step2-next">' + esc(t('next')) + icon('arrow', 'ic') + '</button>' +
+      '</div>' +
+      '</div></div>'
+    );
+  }
+
+  // ─── الكشك: الخطوة 3 ────────────────────────────────────────────────────────
+
+  var HIJRI_MONTHS = {
+    ar: ['محرم', 'صفر', 'ربيع الأول', 'ربيع الآخر', 'جمادى الأولى', 'جمادى الآخرة', 'رجب', 'شعبان', 'رمضان', 'شوال', 'ذو القعدة', 'ذو الحجة'],
+    en: ['Muharram', 'Safar', 'Rabi I', 'Rabi II', 'Jumada I', 'Jumada II', 'Rajab', "Sha'ban", 'Ramadan', 'Shawwal', "Dhu al-Qa'dah", 'Dhu al-Hijjah'],
+  };
+
+  function gregorianMonths() {
+    var locale = T.lang === 'ar' ? 'ar' : 'en';
+    var out = [];
+    for (var m = 0; m < 12; m += 1) {
+      out.push(new Intl.DateTimeFormat(locale + '-u-ca-gregory', { month: 'long' }).format(new Date(2021, m, 1)));
+    }
+    return out;
+  }
+
+  function selectOptions(values, selected, placeholder) {
+    var html = '<option value="">' + esc(placeholder) + '</option>';
+    values.forEach(function (item) {
+      var value = item.value;
+      html += '<option value="' + value + '"' + (String(selected) === String(value) ? ' selected' : '') + '>' + esc(item.label) + '</option>';
+    });
+    return html;
+  }
+
+  function kioskStep3() {
+    var k = state.kiosk;
+    var isHijri = k.cal === 'hijri';
+    var now = new Date();
+    var currentYear = isHijri ? hijriYear(now) : now.getFullYear();
+    var years = [];
+    for (var i = 0; i < 110; i += 1) years.push({ value: currentYear - i, label: String(currentYear - i) });
+
+    var days = [];
+    for (var d = 1; d <= (isHijri ? 30 : 31); d += 1) days.push({ value: d, label: String(d) });
+
+    var monthNames = isHijri ? HIJRI_MONTHS[T.lang] || HIJRI_MONTHS.ar : gregorianMonths();
+    var months = monthNames.map(function (name, index) {
+      return { value: index + 1, label: name };
     });
 
-    var root = $('#viewRoot');
-    var html = '';
-    if (state.view === 'dashboard') html = viewDashboard();
-    else if (state.view === 'files') html = viewFiles();
-    else if (state.view === 'notes') html = viewNotes();
-    else if (state.view === 'trash') html = viewTrash();
-    else if (state.view === 'account') html = viewAccount();
-    root.innerHTML = '<div class="view">' + html + '</div>';
+    var insured = k.category === 'insured';
 
-    afterRender();
-    refreshStorageUI();
-    updateTopbar();
+    return (
+      '<div class="kiosk__head"><h1>' + esc(t('detailsTitle')) + '</h1><p>' + esc(t('detailsSub')) + '</p></div>' +
+      '<div class="card"><div class="card__body">' +
+
+      '<div class="field"><span class="field__label">' + esc(t('dob')) + '</span>' +
+      '<div class="seg" role="tablist" style="margin-bottom:10px">' +
+      '<button type="button" role="tab" data-act="cal" data-cal="hijri" aria-selected="' + (isHijri ? 'true' : 'false') + '">' + esc(t('calHijri')) + '</button>' +
+      '<button type="button" role="tab" data-act="cal" data-cal="greg" aria-selected="' + (!isHijri ? 'true' : 'false') + '">' + esc(t('calGreg')) + '</button>' +
+      '</div>' +
+      '<div class="field__row">' +
+      '<select class="select" id="fkDay" aria-label="' + esc(t('day')) + '">' + selectOptions(days, k.dob.d, t('day')) + '</select>' +
+      '<select class="select" id="fkMonth" aria-label="' + esc(t('month')) + '">' + selectOptions(months, k.dob.m, t('month')) + '</select>' +
+      '<select class="select" id="fkYear" aria-label="' + esc(t('year')) + '">' + selectOptions(years, k.dob.y, t('year')) + '</select>' +
+      '</div>' + fieldError('birthDate') + '</div>' +
+
+      '<div class="field"><label for="fkPhone">' + esc(t('phone')) + '</label>' +
+      '<input class="input input--ltr" id="fkPhone" inputmode="tel" maxlength="10" placeholder="' + esc(t('phonePh')) + '" value="' + esc(k.phone) + '"' +
+      (k.errors.phone ? ' aria-invalid="true"' : '') + '>' +
+      fieldError('phone') + '</div>' +
+
+      (insured
+        ? '<div class="field"><label for="fkInsurer">' + esc(t('insurer')) + '</label>' +
+          '<input class="input" id="fkInsurer" value="' + esc(k.insurer) + '"' + (k.errors.insurer ? ' aria-invalid="true"' : '') + '>' +
+          fieldError('insurer') + '</div>' +
+          '<div class="field"><label for="fkPolicy">' + esc(t('policy')) + '</label>' +
+          '<input class="input input--ltr" id="fkPolicy" value="' + esc(k.policy) + '"' + (k.errors.policyNumber ? ' aria-invalid="true"' : '') + '>' +
+          fieldError('policyNumber') + '</div>'
+        : '') +
+
+      '<div class="field"><label for="fkPin">' + esc(t('pin')) + '</label>' +
+      '<input class="input input--ltr" id="fkPin" type="password" autocomplete="new-password" maxlength="64" value="' + esc(k.pin) + '"' +
+      (k.errors.pin ? ' aria-invalid="true"' : '') + '>' +
+      '<div class="field__hint">' + esc(t('pinHint')) + '</div>' +
+      fieldError('pin') + '</div>' +
+
+      '<div class="field"><label for="fkPin2">' + esc(t('pin2')) + '</label>' +
+      '<input class="input input--ltr" id="fkPin2" type="password" autocomplete="new-password" maxlength="64" value="' + esc(k.pin2) + '"' +
+      (k.errors.pin2 ? ' aria-invalid="true"' : '') + '>' +
+      fieldError('pin2') + '</div>' +
+
+      '<label class="chk" style="display:flex;gap:10px;align-items:flex-start;margin-bottom:6px;font-size:13.5px;color:var(--muted)">' +
+      '<input type="checkbox" id="fkConsent" style="width:20px;height:20px;flex:none;margin-top:2px;accent-color:var(--brand-600)"' + (k.consent ? ' checked' : '') + '>' +
+      '<span>' + esc(t('consentText')) + '</span></label>' +
+      fieldError('consent') +
+
+      '<div class="bar bar--split" style="margin-top:20px">' +
+      '<button class="btn btn--ghost" type="button" data-act="kiosk-back">' + esc(t('back')) + '</button>' +
+      '<button class="btn" type="button" data-act="submit" id="fkSubmit"' + (k.busy ? ' disabled' : '') + '>' +
+      esc(k.busy ? t('saving') : t('submit')) + '</button>' +
+      '</div>' +
+      '</div></div>'
+    );
   }
 
-  function updateTopbar() {
-    var u = A.getUser(); if (!u) return;
-    var initial = (u.name || u.email || 'م').trim().charAt(0);
-    $('#topName').textContent = u.name || u.email;
-    $('#topAvatar').textContent = initial;
-    $('#popName').textContent = u.name || '—';
-    $('#popMail').textContent = u.email;
-    $('#popAvatar').textContent = initial;
+  function hijriYear(date) {
+    try {
+      var parts = new Intl.DateTimeFormat('en-u-ca-islamic-umalqura-nu-latn', { year: 'numeric', timeZone: 'UTC' }).formatToParts(date);
+      var found = parts.filter(function (p) { return p.type === 'year'; })[0];
+      return found ? parseInt(found.value, 10) : 1440;
+    } catch (error) {
+      return 1446;
+    }
   }
 
-  /* ---------------- storage UI ---------------- */
-  function refreshStorageUI() {
-    var q = DB.quotaInfo();
-    var bar = $('#storageBar');
-    if (!bar) return;
-    bar.style.width = Math.max(1.5, q.pct).toFixed(1) + '%';
-    $('#storageUsed').textContent = fmtBytes(q.used);
-    $('#storagePct').textContent = q.pct.toFixed(1) + '%';
-    bar.parentNode.classList.toggle('is-warn', q.pct > 80);
-    $('#storageHint').textContent = q.pct > 80
-      ? 'اقتربت من الحدّ الأقصى (5 م.ب) — نزّل بعض الملفات.'
-      : 'من أصل 5 ميجابايت مخصّصة للمتصفح';
+  // ─── الكشك: الخطوة 4 ────────────────────────────────────────────────────────
+
+  function kioskStep4() {
+    var result = state.kiosk.result;
+    if (!result) return '';
+
+    var sync = result.sync || {};
+    var systems = ['raqeem', 'sehhaty'];
+
+    var rows = systems
+      .map(function (key) {
+        var entry = sync[key];
+        var status = entry && entry.status ? entry.status : result.offline ? 'offline' : 'wait';
+        return (
+          '<div class="sync-row"><span class="sync-row__name">' +
+          icon(key === 'raqeem' ? 'hospital' : 'steth', 'ic ic--sm') + esc(t(key)) + '</span>' +
+          statusChip(status) + '</div>'
+        );
+      })
+      .join('');
+
+    return (
+      '<div class="card"><div class="card__body">' +
+      '<div class="success">' +
+      '<div class="success__ic">' + icon('check', 'ic') + '</div>' +
+      '<h1 style="font-size:1.5rem;font-weight:700;color:var(--ink)">' + esc(t('doneTitle')) + '</h1>' +
+      '<p style="margin-top:6px;color:var(--muted);font-size:14.5px">' + esc(t('doneSub')) + '</p>' +
+      '<div class="queue-hero"><div class="queue__label">' + esc(t('doneQueue')) + '</div>' +
+      '<div class="queue__num">' + esc(result.queueNumber || '—') + '</div></div>' +
+      '</div>' +
+      (result.offline
+        ? '<div class="notice notice--warn" style="margin-bottom:16px">' + icon('alert', 'ic') +
+          '<div><b>' + esc(t('offlineTitle')) + '</b><br>' + esc(t('offlineBody')) + '</div></div>'
+        : '') +
+      '<div style="margin-top:8px"><div style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:8px">' + esc(t('syncTitle')) + '</div>' +
+      '<div class="sync-list">' + rows + '</div></div>' +
+      '<div class="bar bar--split" style="margin-top:24px">' +
+      '<button class="btn btn--ghost" type="button" data-act="again">' + esc(t('again')) + '</button>' +
+      '<button class="btn" type="button" data-act="open-portal">' + esc(t('toPortal')) + '</button>' +
+      '</div>' +
+      '</div></div>'
+    );
   }
 
-  /* ============================================================
-     VIEW — Dashboard
-     ============================================================ */
-  function viewDashboard() {
-    var u = A.getUser();
-    var files = activeFiles(), notes = activeNotes();
-    var totalBytes = files.reduce(function (s, f) { return s + (f.size || 0); }, 0);
-    var recent = sortList(files).slice(0, 5);
-    var q = DB.quotaInfo();
+  function viewKiosk() {
+    var k = state.kiosk;
+    var inner = '';
+
+    if (k.step === 4) {
+      inner = kioskStep4();
+    } else {
+      var body = k.step === 1 ? kioskStep1() : k.step === 2 ? kioskStep2() : kioskStep3();
+      inner = progressBar(k.step) + body;
+    }
+
+    return kioskShell(inner);
+  }
+
+  // ─── تسجيل الدخول ───────────────────────────────────────────────────────────
+
+  function viewLogin() {
+    var l = state.login;
+
+    return (
+      topbar({ hideCta: true }) +
+      '<main id="main" style="min-height:calc(100vh - var(--top-h) - 200px);display:flex;align-items:center;justify-content:center;padding:48px 0 72px">' +
+      '<div class="wrap" style="max-width:520px">' +
+      '<div class="card"><div class="card__body">' +
+      '<div style="text-align:center;margin-bottom:26px">' +
+      '<div class="success__ic" style="margin-bottom:14px">' + icon('lock', 'ic') + '</div>' +
+      '<h1 style="font-size:1.4rem;font-weight:700;color:var(--ink)">' + esc(t('loginTitle')) + '</h1>' +
+      '<p style="margin-top:6px;color:var(--muted);font-size:14.5px">' + esc(t('loginSub')) + '</p>' +
+      '</div>' +
+      (l.error ? '<div class="notice notice--danger" style="margin-bottom:18px">' + icon('alert', 'ic') + '<div>' + esc(errText(l.error)) + '</div></div>' : '') +
+      '<div class="field"><label for="lgType">' + esc(t('docType')) + '</label>' +
+      '<select class="select" id="lgType">' +
+      ['nid', 'iqama', 'passport']
+        .map(function (type) {
+          return '<option value="' + type + '"' + (l.docType === type ? ' selected' : '') + '>' + esc(docLabel(type)) + '</option>';
+        })
+        .join('') +
+      '</select></div>' +
+      '<div class="field"><label for="lgDoc">' + esc(t('docNo')) + '</label>' +
+      '<input class="input input--ltr" id="lgDoc" autocomplete="username" value="' + esc(l.docNo) + '" placeholder="' + esc(t('docNoPh')) + '"></div>' +
+      '<div class="field"><label for="lgPin">' + esc(t('pin')) + '</label>' +
+      '<input class="input input--ltr" id="lgPin" type="password" autocomplete="current-password" maxlength="64" value="' + esc(l.pin) + '"></div>' +
+      '<button class="btn btn--block btn--lg" type="button" data-act="login"' + (l.busy ? ' disabled' : '') + '>' +
+      esc(l.busy ? t('loading') : t('loginBtn')) + '</button>' +
+      '<p style="margin-top:16px;text-align:center;font-size:12.5px;color:var(--faint)">' + esc(t('loginHint')) + '</p>' +
+      '</div></div></div></main>' +
+      footer()
+    );
+  }
+
+  // ─── بوابة المريض ───────────────────────────────────────────────────────────
+
+  function viewPortal() {
+    var p = state.portal;
+    if (!p) return viewLogin();
+
+    var data = p.data;
+    var profile = data.profile || {};
+    var visits = data.visits || [];
+    var notes = data.notes || [];
+    var latest = visits[0];
 
     var stats =
-      '<div class="stats">' +
-        statCard('i-folder', '', files.length, 'ملف محفوظ') +
-        statCard('i-note', 'v', notes.length, 'ملاحظة') +
-        statCard('i-drive', 'a', fmtBytes(totalBytes), 'حجم المحتوى') +
-        statCard('i-shield', 'g', q.pct.toFixed(0) + '%', 'المساحة المستخدمة') +
+      '<div class="portal__stats">' +
+      '<div class="stat"><span class="stat__ic">' + icon('calendar', 'ic') + '</span><div><b>' + visits.length + '</b><span>' + esc(t('statVisits')) + '</span></div></div>' +
+      '<div class="stat"><span class="stat__ic">' + icon('clock', 'ic') + '</span><div><b>' + (latest ? esc(latest.queueNumber) : '—') + '</b><span>' + esc(t('statLast')) + '</span></div></div>' +
+      '<div class="stat"><span class="stat__ic">' + icon('hospital', 'ic') + '</span><div><b style="font-size:15px">' +
+      (latest && latest.sync && latest.sync.raqeem ? statusChip(latest.sync.raqeem.status) : statusChip('offline')) +
+      '</b><span>' + esc(t('statSync')) + '</span></div></div>' +
       '</div>';
 
-    var banner =
-      '<div class="banner">' + icon('i-shield') +
-        '<div><b>خصوصيتك مضمونة على مستويين</b>' +
-        '<p>١) بياناتك مخزّنة تحت مفتاح خاص بحسابك في localStorage ولا تُقرأ إلا بعد التحقق من جلستك. ' +
-        '٢) محتوى كل ملف وملاحظة مشفّر بـ AES‑256 بمفتاح مشتق من كلمة مرورك — لا يُخزَّن في أي مكان.</p></div>' +
-      '</div>';
-
-    var quick =
-      '<div class="quick">' +
-        '<button type="button" data-act="pick">' + icon('i-upload') +
-          '<span><b>رفع ملف</b><span>صور، مستندات، صوت…</span></span></button>' +
-        '<button type="button" data-act="new-note">' + icon('i-note') +
-          '<span><b>ملاحظة جديدة</b><span>نص سريع ومشفّر</span></span></button>' +
-        '<button type="button" data-nav="files">' + icon('i-folder') +
-          '<span><b>تصفح ملفاتي</b><span>' + files.length + ' ملف</span></span></button>' +
-        '<button type="button" data-act="lock">' + icon('i-lock') +
-          '<span><b>قفل الآن</b><span>إخفاء المحتوى فوراً</span></span></button>' +
-      '</div>';
-
-    var recentHtml = recent.length
-      ? '<div class="rowlist">' + recent.map(function (f) {
-          return '<div class="rowitem">' +
-            '<span class="rowitem__ic">' + icon(KIND_ICON[kindOf(f)]) + '</span>' +
-            '<span class="rowitem__t"><b>' + esc(f.name) + '</b>' +
-              '<span>' + typeLabel(f) + ' · ' + fmtBytes(f.size) + '</span></span>' +
-            '<span class="rowitem__s">' + relTime(f.updatedAt) + '</span>' +
-            '<button class="iconbtn" data-open="' + f.id + '" title="معاينة">' + icon('i-eye') + '</button>' +
-          '</div>';
-        }).join('') + '</div>'
-      : '<div class="card__pad"><p style="color:var(--ink-3);font-size:.9rem">لا توجد ملفات بعد. ابدأ برفع أول ملف أو كتابة ملاحظة.</p></div>';
-
-    var locked =
-      !A.isUnlocked()
-        ? '<div class="banner" style="background:linear-gradient(135deg,#FFF4E8,#FFEDEF);border-color:#F3DCC4">' +
-          icon('i-lock') + '<div><b>المحتوى مقفل</b>' +
-          '<p>أدخل كلمة المرور لفكّ تشفير ملفاتك.</p>' +
-          '<button class="btn btn--soft btn--sm" style="margin-top:10px" data-act="ask-unlock">فكّ القفل</button></div></div>'
-        : '';
-
-    return pageHead('الرئيسية', 'مرحباً ' + (u.name || '') + ' — هذه نظرة سريعة على مساحتك.') +
-      locked + banner + stats +
-      '<div class="two">' +
-        '<section class="card">' +
-          '<div class="card__head"><h2>آخر الملفات</h2>' +
-            '<button class="link" data-nav="files">عرض الكل</button></div>' +
-          recentHtml +
-        '</section>' +
-        '<section class="card card__pad">' +
-          '<h2 style="font-size:1.02rem;font-weight:650;margin-bottom:14px">إجراءات سريعة</h2>' +
-          quick +
-          '<div style="margin-top:20px;padding-top:16px;border-top:1px dashed var(--line)">' +
-            '<div class="kv"><span>تاريخ الانضمام</span><b>' + fmtDate(u.createdAt) + '</b></div>' +
-            '<div class="kv"><span>آخر دخول</span><b>' + (u.lastLogin ? fmtDate(u.lastLogin, true) : '—') + '</b></div>' +
-            '<div class="kv"><span>حالة الحساب</span><b style="color:var(--green)">نشط وآمن</b></div>' +
-          '</div>' +
-        '</section>' +
-      '</div>';
-  }
-
-  function statCard(ic, mod, val, label) {
-    return '<div class="stat"><span class="stat__ic' + (mod ? ' stat__ic--' + mod : '') + '">' + icon(ic) + '</span>' +
-      '<span><b>' + esc(val) + '</b><span>' + label + '</span></span></div>';
-  }
-
-  function pageHead(title, sub, actions) {
-    return '<div class="page-head"><div><h1>' + title + '</h1><p>' + (sub || '') + '</p></div>' +
-      (actions ? '<div class="page-head__acts">' + actions + '</div>' : '') + '</div>';
-  }
-
-  /* ============================================================
-     VIEW — Files
-     ============================================================ */
-  var FILTERS = [
-    ['all','الكل','i-grid'],
-    ['image','صور','i-image'],
-    ['doc','مستندات','i-note'],
-    ['video','فيديو','i-video'],
-    ['audio','صوت','i-music'],
-    ['zip','أرشيف','i-archive'],
-    ['star','المفضلة','i-star']
-  ];
-
-  function toolbar(showSort) {
-    return '<div class="toolbar">' +
-      '<div class="filters">' + FILTERS.map(function (f) {
-        return '<button class="filter' + (state.filter === f[0] ? ' is-active' : '') + '" ' +
-          'type="button" data-filter="' + f[0] + '">' + icon(f[2]) + esc(f[1]) + '</button>';
-      }).join('') + '</div>' +
-      '<div class="toolbar__end">' +
-        (showSort ? '<select class="selectbox" data-sort>' +
-          '<option value="newest">الأحدث أولاً</option>' +
-          '<option value="oldest">الأقدم أولاً</option>' +
-          '<option value="name">الاسم (أ–ي)</option>' +
-          '<option value="size">الأكبر حجماً</option>' +
-        '</select>' : '') +
-        '<div class="viewtoggle">' +
-          '<button type="button" data-layout="grid" class="' + (state.layout === 'grid' ? 'is-active' : '') + '" title="شبكة">' + icon('i-grid') + '</button>' +
-          '<button type="button" data-layout="list" class="' + (state.layout === 'list' ? 'is-active' : '') + '" title="قائمة">' + icon('i-list') + '</button>' +
-        '</div>' +
-      '</div>' +
-    '</div>';
-  }
-
-  function dropzone() {
-    return '<div class="drop" id="dropzone" tabindex="0" role="button" aria-label="رفع ملف">' +
-      '<div class="drop__ic">' + icon('i-upload') + '</div>' +
-      '<b>اسحب ملفاتك هنا</b>' +
-      '<span>أو <em>تصفّح جهازك</em> — الحدّ الأقصى 4 ميجابايت للملف الواحد</span>' +
-      '<span style="margin-top:6px">كل ما ترفعه يُشفَّر محلياً قبل الحفظ</span>' +
-    '</div>';
-  }
-
-  function viewFiles() {
-    var list = visibleFiles();
-    var all = activeFiles().length;
-    var sub = all
-      ? (list.length === all ? all + ' ملف' : list.length + ' من ' + all + ' ملف') +
-        (state.query ? ' — نتائج «' + esc(state.query) + '»' : '')
-      : 'لا توجد ملفات بعد';
-
-    return pageHead('ملفاتي', sub,
-        '<button class="btn btn--ghost" type="button" data-act="new-note">' + icon('i-plus') + 'ملاحظة</button>' +
-        '<button class="btn btn--primary" type="button" data-act="pick">' + icon('i-upload') + 'رفع ملف</button>') +
-      (all === 0 ? dropzone() : '') +
-      toolbar(true) +
-      (list.length
-        ? '<div class="grid ' + (state.layout === 'list' ? 'grid--list' : '') + '">' + list.map(fileCard).join('') + '</div>'
-        : (all === 0
-            ? emptyState('i-folder', 'مساحتك فارغة', 'ارفع أول ملف لك أو اكتب ملاحظة — ستظهر هنا مباشرة وبشكل مشفّر.', 'رفع ملف', 'pick')
-            : emptyState('i-search', 'لا توجد نتائج', 'لم نعثر على ملف يطابق بحثك أو الفلتر المحدد.', 'مسح الفلتر', 'clear-filters')));
-  }
-
-  function fileCard(f, i) {
-    var kind = kindOf(f);
-    var thumb = '';
-    if (kind === 'image' && f._thumbUrl) {
-      thumb = '<img src="' + f._thumbUrl + '" alt="" loading="lazy">';
-    } else {
-      thumb = icon(KIND_ICON[kind]);
-    }
-    return '<article class="file" data-id="' + f.id + '" style="animation-delay:' + Math.min(i * 24, 240) + 'ms">' +
-      '<div class="file__thumb">' + thumb +
-        '<span class="file__type">' + esc(typeLabel(f)) + '</span>' +
-        '<button class="file__star' + (f.star ? ' is-on' : '') + '" data-act="star" data-id="' + f.id + '" ' +
-          'title="المفضلة" aria-label="تبديل المفضلة">' + icon('i-star') + '</button>' +
-      '</div>' +
-      '<div class="file__body">' +
-        '<div class="file__name" title="' + esc(f.name) + '">' + esc(f.name) + '</div>' +
-        '<div class="file__meta"><span>' + fmtBytes(f.size) + '</span><i></i>' +
-          '<span>' + fmtDate(f.updatedAt) + '</span>' +
-          (f.enc ? '<i></i><span style="color:var(--brand)">مشفّر</span>' : '') +
-        '</div>' +
-      '</div>' +
-      '<div class="file__acts">' +
-        '<button data-act="preview" data-id="' + f.id + '" title="معاينة">' + icon('i-eye') + '</button>' +
-        '<button data-act="download" data-id="' + f.id + '" title="تنزيل">' + icon('i-download') + '</button>' +
-        '<button data-act="rename" data-id="' + f.id + '" title="إعادة تسمية">' + icon('i-edit') + '</button>' +
-        '<button data-act="trash" data-id="' + f.id + '" class="is-danger" title="حذف">' + icon('i-trash') + '</button>' +
-      '</div>' +
-    '</article>';
-  }
-
-  /* ============================================================
-     VIEW — Notes
-     ============================================================ */
-  var NOTE_COLORS = ['#0E8C96','#1F6FEB','#6E56CF','#B4690E','#C4324B','#0E9F6E'];
-
-  function viewNotes() {
-    var all = activeNotes();
-    var list = sortList(all.filter(matchesNote));
-    if (state.filter === 'star') list = list.filter(function (n) { return n.star; });
-
-    return pageHead('ملاحظاتي',
-        all.length ? list.length + ' من ' + all.length + ' ملاحظة' : 'ملاحظاتك مشفّرة أيضاً',
-        '<button class="btn btn--primary" type="button" data-act="new-note">' + icon('i-plus') + 'ملاحظة جديدة</button>') +
-      '<div class="toolbar">' +
-        '<div class="filters">' +
-          '<button class="filter' + (state.filter !== 'star' ? ' is-active' : '') + '" type="button" data-filter="all">' + icon('i-grid') + 'الكل</button>' +
-          '<button class="filter' + (state.filter === 'star' ? ' is-active' : '') + '" type="button" data-filter="star">' + icon('i-star') + 'المثبتة</button>' +
-        '</div>' +
-        '<div class="toolbar__end"><select class="selectbox" data-sort>' +
-          '<option value="newest">الأحدث أولاً</option><option value="oldest">الأقدم أولاً</option>' +
-          '<option value="name">العنوان (أ–ي)</option>' +
-        '</select></div>' +
-      '</div>' +
-      (list.length
-        ? '<div class="notes">' + list.map(noteCard).join('') + '</div>'
-        : emptyState('i-note', 'لا توجد ملاحظات', 'دوّن أفكارك، نتائج المرضى التجريبية، أو أي معلومة — النص يُشفَّر قبل الحفظ.', 'ملاحظة جديدة', 'new-note'));
-  }
-
-  function noteCard(n, i) {
-    var color = n.color || NOTE_COLORS[0];
-    return '<article class="note" data-note="' + n.id + '" style="border-inline-start-color:' + color +
-      ';animation-delay:' + Math.min(i * 24, 240) + 'ms">' +
-      '<h3>' + esc(n.title || 'بدون عنوان') + '</h3>' +
-      '<div class="note__body">' + esc(n._plain || '') + '</div>' +
-      '<div class="note__foot">' +
-        '<span class="note__date">' + relTime(n.updatedAt) + '</span>' +
-        '<span class="note__acts">' +
-          '<button data-act="edit-note" data-id="' + n.id + '" title="تعديل">' + icon('i-edit') + '</button>' +
-          '<button data-act="pin-note" data-id="' + n.id + '" title="تثبيت">' + icon('i-pin') + '</button>' +
-          '<button data-act="del-note" data-id="' + n.id + '" class="is-danger" title="حذف">' + icon('i-trash') + '</button>' +
-        '</span>' +
-      '</div>' +
-    '</article>';
-  }
-
-  /* ============================================================
-     VIEW — Trash
-     ============================================================ */
-  function viewTrash() {
-    var list = trashed();
-    return pageHead('المحذوفات', list.length + ' عنصر — تُحذف نهائياً بعد 30 يوماً',
-        list.length ? '<button class="btn btn--ghost" type="button" data-act="empty-trash">' +
-          icon('i-trash') + 'إفراغ السلة</button>' : '') +
-      (list.length
-        ? '<div class="card"><div class="rowlist">' + list.map(function (it) {
-            var isFile = it.kind !== undefined || it.size !== undefined;
-            return '<div class="rowitem">' +
-              '<span class="rowitem__ic" style="background:#FCEBEF;color:var(--rose)">' +
-                icon(isFile ? KIND_ICON[kindOf(it)] : 'i-note') + '</span>' +
-              '<span class="rowitem__t"><b>' + esc(it.name || it.title || 'بدون عنوان') + '</b>' +
-                '<span>' + (isFile ? 'ملف' : 'ملاحظة') + ' · حُذف ' + relTime(it.trashedAt || it.updatedAt) + '</span></span>' +
-              '<span class="rowitem__s" style="display:flex;gap:6px">' +
-                '<button class="btn btn--soft btn--sm" data-act="restore" data-id="' + it.id + '">' + icon('i-restore') + 'استعادة</button>' +
-                '<button class="btn btn--danger btn--sm" data-act="purge" data-id="' + it.id + '">' + icon('i-trash') + 'حذف نهائي</button>' +
-              '</span>' +
-            '</div>';
-          }).join('') + '</div></div>'
-        : emptyState('i-trash', 'سلة فارغة', 'لا يوجد أي عنصر محذوف. يمكنك استعادة أي ملف تحذفه هنا قبل الحذف النهائي.'));
-  }
-
-  /* ============================================================
-     VIEW — Account
-     ============================================================ */
-  function viewAccount() {
-    var u = A.getUser();
-    var files = activeFiles().length, notes = activeNotes().length;
-    var q = DB.quotaInfo();
-
-    return pageHead('الملف الشخصي', 'إدارة حسابك وإعدادات الأمان') +
-      '<div class="two">' +
-        '<div style="display:flex;flex-direction:column;gap:20px">' +
-
-        '<section class="card">' +
-          '<div class="card__head"><h2>البيانات الأساسية</h2></div>' +
-          '<div class="card__pad">' +
-            '<div style="display:flex;gap:16px;align-items:center;margin-bottom:20px">' +
-              '<span class="avatar avatar--lg" style="width:64px;height:64px;font-size:1.6rem">' +
-                esc((u.name || 'م').charAt(0)) + '</span>' +
-              '<div><b style="font-size:1.1rem">' + esc(u.name) + '</b>' +
-                '<div style="color:var(--ink-4);font-size:.88rem" dir="ltr">' + esc(u.email) + '</div></div>' +
-            '</div>' +
-            '<form class="mform" id="profileForm">' +
-              '<label class="field"><span class="field__label">الاسم الكامل</span>' +
-                '<input type="text" id="pfName" value="' + esc(u.name) + '" maxlength="60"></label>' +
-              '<label class="field"><span class="field__label">البريد الإلكتروني</span>' +
-                '<input type="text" id="pfMail" dir="ltr" value="' + esc(u.email) + '"></label>' +
-              '<div><button class="btn btn--primary" type="submit">' + icon('i-check') + 'حفظ التغييرات</button></div>' +
-            '</form>' +
-          '</div>' +
-        '</section>' +
-
-        '<section class="card">' +
-          '<div class="card__head"><h2>تغيير كلمة المرور</h2></div>' +
-          '<div class="card__pad">' +
-            '<div class="banner" style="margin-bottom:18px">' + icon('i-key') +
-              '<div><b>تنبيه مهم</b><p>تغيير كلمة المرور يعيد تشفير كامل محتواك بمفتاح جديد. ' +
-              'إن نسيتَ كلمة المرور الحالية فلن يمكن استرجاع البيانات إطلاقاً.</p></div></div>' +
-            '<form class="mform" id="pwForm">' +
-              '<label class="field"><span class="field__label">كلمة المرور الحالية</span>' +
-                '<input type="password" id="pwOld" dir="ltr" autocomplete="current-password" style="height:48px;border:1.5px solid var(--line);border-radius:10px;padding:0 14px;outline:none"></label>' +
-              '<div class="grid2">' +
-                '<label class="field"><span class="field__label">كلمة المرور الجديدة</span>' +
-                  '<input type="password" id="pwNew" dir="ltr" autocomplete="new-password" style="height:48px;border:1.5px solid var(--line);border-radius:10px;padding:0 14px;outline:none"></label>' +
-                '<label class="field"><span class="field__label">تأكيد الجديدة</span>' +
-                  '<input type="password" id="pwNew2" dir="ltr" autocomplete="new-password" style="height:48px;border:1.5px solid var(--line);border-radius:10px;padding:0 14px;outline:none"></label>' +
-              '</div>' +
-              '<div><button class="btn btn--primary" type="submit">' + icon('i-lock') + 'تحديث كلمة المرور</button></div>' +
-            '</form>' +
-          '</div>' +
-        '</section>' +
-
-        '<section class="card danger-zone">' +
-          '<div class="card__head"><h2 style="color:var(--rose)">منطقة الخطر</h2></div>' +
-          '<div class="card__pad">' +
-            '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-              '<button class="btn btn--ghost" data-act="export">' + icon('i-download') + 'تصدير نسخة احتياطية (JSON)</button>' +
-              '<button class="btn btn--danger" data-act="delete-account">' + icon('i-trash') + 'حذف الحساب نهائياً</button>' +
-            '</div>' +
-            '<p class="fineprint" style="text-align:start;margin-top:12px">' +
-              'حذف الحساب يزيل كل بياناتك من هذا الجهاز فوراً ولا يمكن التراجع عنه.</p>' +
-          '</div>' +
-        '</section>' +
-
-        '</div>' +
-
-        '<div style="display:flex;flex-direction:column;gap:20px">' +
-          '<section class="card">' +
-            '<div class="card__head"><h2>حالة التخزين</h2></div>' +
-            '<div class="card__pad">' +
-              '<div class="prog" style="margin-bottom:14px"><i style="width:' + q.pct.toFixed(1) + '%"></i></div>' +
-              '<div class="kv"><span>المستخدم</span><b>' + fmtBytes(q.used) + ' من 5 م.ب</b></div>' +
-              '<div class="kv"><span>النسبة</span><b>' + q.pct.toFixed(1) + '%</b></div>' +
-              '<div class="kv"><span>عدد الملفات</span><b>' + files + '</b></div>' +
-              '<div class="kv"><span>عدد الملاحظات</span><b>' + notes + '</b></div>' +
-              '<div class="kv"><span>الملفات المحذوفة</span><b>' + trashed().length + '</b></div>' +
-            '</div>' +
-          '</section>' +
-          '<section class="card">' +
-            '<div class="card__head"><h2>الأمان والخصوصية</h2></div>' +
-            '<div class="card__pad">' +
-              secRow('i-shield', 'عزل الحسابات', 'بياناتك تحت مفتاح ' + esc(A.getSessionUserId() || '').slice(0, 16) + '…') +
-              secRow('i-key', 'تشفير المحتوى', 'AES‑256-GCM') +
-              secRow('i-lock', 'اشتقاق المفتاح', 'PBKDF2 · 160,000 دورة') +
-              secRow('i-drive', 'قاعدة البيانات', 'localStorage — على جهازك فقط') +
-              secRow('i-clock', 'صلاحية الجلسة', '14 يوماً') +
-              '<button class="btn btn--ghost btn--block" style="margin-top:16px" data-act="logout">' +
-                icon('i-logout') + 'تسجيل الخروج من هذا الجهاز</button>' +
-            '</div>' +
-          '</section>' +
-        '</div>' +
-      '</div>';
-  }
-
-  function secRow(ic, title, val) {
-    return '<div style="display:flex;gap:12px;align-items:center;padding:11px 0;border-bottom:1px dashed var(--line)">' +
-      '<span class="rowitem__ic" style="width:34px;height:34px">' + icon(ic) + '</span>' +
-      '<span style="flex:1"><b style="display:block;font-size:.88rem">' + title + '</b>' +
-      '<span style="font-size:.76rem;color:var(--ink-4)" dir="auto">' + val + '</span></span>' +
-      '<span class="chip chip--ok">' + icon('i-check') + 'مفعّل</span></div>';
-  }
-
-  function emptyState(ic, title, msg, btnLabel, act) {
-    return '<div class="empty"><div class="empty__ic">' + icon(ic) + '</div>' +
-      '<h3>' + title + '</h3><p>' + msg + '</p>' +
-      (btnLabel ? '<button class="btn btn--primary" data-act="' + act + '">' + icon('i-plus') + btnLabel + '</button>' : '') +
-      '</div>';
-  }
-
-  /* ============================================================
-     AFTER RENDER — bindings
-     ============================================================ */
-  function afterRender() {
-    var sel = $('[data-sort]');
-    if (sel) sel.value = state.sort;
-
-    var dz = $('#dropzone');
-    if (dz) bindDrop(dz);
-
-    var pf = $('#profileForm');
-    if (pf) pf.addEventListener('submit', onProfileSubmit);
-    var pwf = $('#pwForm');
-    if (pwf) pwf.addEventListener('submit', onPasswordSubmit);
-  }
-
-  /* ============================================================
-     FILE OPERATIONS
-     ============================================================ */
-  function findFile(id) {
-    return state.data.files.filter(function (f) { return f.id === id; })[0];
-  }
-  function findNote(id) {
-    return state.data.notes.filter(function (n) { return n.id === id; })[0];
-  }
-
-  function lockedGuard() {
-    if (A.isUnlocked()) return true;
-    U.toast('المحتوى مقفل — أدخل كلمة المرور أولاً.', 'err');
-    askUnlock();
-    return false;
-  }
-
-  function askUnlock() {
-    var wrap = document.createElement('div');
-    wrap.className = 'mform';
-    wrap.innerHTML =
-      '<div class="banner" style="margin:0">' + icon('i-lock') +
-      '<div><b>البيانات مقفلة</b><p>أدخل كلمة المرور لفكّ تشفير محتوى حسابك على هذا الجهاز.</p></div></div>' +
-      '<label class="field"><span class="field__label">كلمة المرور</span>' +
-      '<input type="password" id="unlockPw" dir="ltr" autocomplete="current-password" ' +
-      'style="height:48px;border:1.5px solid var(--line);border-radius:10px;padding:0 14px;outline:none"></label>';
-
-    var m = U.open({
-      title: 'فكّ قفل البيانات',
-      body: wrap,
-      actions: [
-        { label: 'لاحقاً', cls: 'btn--ghost', onClick: function () { U.close(); } },
-        { label: 'فتح', cls: 'btn--primary', onClick: doUnlock }
-      ]
-    });
-    var input = wrap.querySelector('#unlockPw');
-    setTimeout(function () { input.focus(); }, 80);
-    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); doUnlock(); } });
-    void m;
-
-    function doUnlock() {
-      var pw = input.value;
-      if (!pw) { input.focus(); return; }
-      A.unlock(pw).then(function () {
-        U.close();
-        U.toast('تم فتح القفل — محتواك جاهز.', 'ok');
-        return hydrate();
-      }).then(function () { render(); }).catch(function (e) {
-        U.toast(e.message || 'كلمة المرور غير صحيحة', 'err');
-        input.value = ''; input.focus();
-      });
-    }
-  }
-
-  /* ---------- upload ---------- */
-  var MAX_SIZE = 4 * 1024 * 1024;
-
-  function bindDrop(zone) {
-    ['dragenter','dragover'].forEach(function (t) {
-      zone.addEventListener(t, function (e) { e.preventDefault(); zone.classList.add('is-over'); });
-    });
-    ['dragleave','drop'].forEach(function (t) {
-      zone.addEventListener(t, function (e) { e.preventDefault(); zone.classList.remove('is-over'); });
-    });
-    zone.addEventListener('drop', function (e) {
-      if (e.dataTransfer && e.dataTransfer.files) handleFiles(e.dataTransfer.files);
-    });
-    zone.addEventListener('click', pick);
-    zone.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
-    });
-  }
-
-  function pick() {
-    if (!lockedGuard()) return;
-    var inp = $('#filePicker');
-    inp.value = '';
-    inp.click();
-  }
-
-  function handleFiles(fileList) {
-    if (!lockedGuard()) return;
-    var arr = Array.prototype.slice.call(fileList || []);
-    if (!arr.length) return;
-
-    var progress = document.createElement('div');
-    progress.innerHTML =
-      '<div class="prog" style="margin-bottom:12px"><i id="upProg" style="width:0%"></i></div>' +
-      '<p style="font-size:.88rem;color:var(--ink-3);text-align:center" id="upTxt">جاري التشفير والحفظ…</p>';
-    var modal = U.open({ title: 'رفع ' + arr.length + ' ملف', body: progress, actions: [] });
-
-    var added = 0, skipped = 0, shrunk = 0, idx = 0;
-
-    function step() {
-      if (idx >= arr.length) return finish();
-      var file = arr[idx++];
-      var bar = progress.querySelector('#upProg');
-      if (bar) bar.style.width = ((idx / arr.length) * 100).toFixed(0) + '%';
-
-      if (file.size > MAX_SIZE) { skipped++; return step(); }
-
-      var reader = new FileReader();
-      reader.onerror = function () { skipped++; step(); };
-      reader.onload = function () {
-        var dataUrl = String(reader.result || '');
-
-        // 1) ضغط الصور الكبيرة قبل التشفير — يوفّر مساحة localStorage كبيرة
-        shrinkIfNeeded(file, dataUrl, function (finalUrl, wasShrunk) {
-          if (wasShrunk) shrunk++;
-          // 2) تشفير المحتوى
-          encryptPayload(file, finalUrl).then(function (payload) {
-            // 3) بناء السجل والحفظ
-            storeRecord(file, payload, finalUrl, function (ok) {
-              if (ok) added++; else skipped++;
-              step();
-            });
-          }).catch(function () { skipped++; step(); });
-        });
-      };
-      reader.readAsDataURL(file);
-    }
-
-    function finish() {
-      modal.close();
-      render();
-      if (added) U.toast('تمت إضافة ' + added + ' ملف مشفر بنجاح.', 'ok');
-      if (shrunk) U.toast('تم ضغط ' + shrunk + ' صورة لتوافق مساحة المتصفح.', 'info');
-      if (skipped) U.toast('تعذّر حفظ ' + skipped + ' ملف (حجم كبير أو امتلاء المساحة).', 'err');
-    }
-
-    step();   // بدء المعالجة
-  }
-
-  /* ضغط/تصغير الصور قبل الحفظ */
-  function shrinkIfNeeded(file, dataUrl, cb) {
-    var isImg = (file.type || '').indexOf('image/') === 0 &&
-                !/image\/(svg|gif)/i.test(file.type || '');
-    if (!isImg || file.size <= 480 * 1024) return cb(dataUrl, false);
-
-    try {
-      var img = new Image();
-      img.onload = function () {
-        var maxEdge = 1600;
-        var w = img.width, h = img.height;
-        if (Math.max(w, h) <= maxEdge && file.size <= 900 * 1024) return cb(dataUrl, false);
-        var scale = Math.min(1, maxEdge / Math.max(w, h));
-        var cv = document.createElement('canvas');
-        cv.width = Math.max(1, Math.round(w * scale));
-        cv.height = Math.max(1, Math.round(h * scale));
-        var ctx = cv.getContext('2d');
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, cv.width, cv.height);
-        ctx.drawImage(img, 0, 0, cv.width, cv.height);
-        var out = null;
-        try { out = cv.toDataURL('image/jpeg', 0.82); } catch (e) { out = null; }
-        // اaccept فقط إن كان أصغر فعلاً
-        if (out && out.length < dataUrl.length) cb(out, true);
-        else cb(dataUrl, false);
-      };
-      img.onerror = function () { cb(dataUrl, false); };
-      img.src = dataUrl;
-    } catch (e) { cb(dataUrl, false); }
-  }
-
-  /* اختيار نمط التشفير حسب نوع الملف */
-  function encryptPayload(file, dataUrl) {
-    var b64 = (dataUrl.split(',')[1] || '');
-    var isText = (file.type || '').indexOf('text/') === 0 ||
-                 /\.(txt|md|csv|json|xml|log|sql|js|css|html|yml|yaml|ini|conf)$/i.test(file.name);
-    if (isText) {
-      var txt = '';
-      try { txt = decodeURIComponent(escape(atob(b64))); } catch (e) { txt = ''; }
-      return C.encryptText(A.getDataKey(), txt);
-    }
-    return C.encryptBlob(A.getDataKey(), b64);
-  }
-
-  /* حفظ سجل الملف داخل بيانات المالك فقط */
-  function storeRecord(file, payload, dataUrl, cb) {
-    var name = file.name;
-    var base = name.replace(/\.[^.]+$/, '');
-    var ext = extOf(name) ? '.' + extOf(name) : '';
-    var n = 1;
-    while (state.data.files.some(function (f) { return !f.trashed && f.name === name; })) {
-      name = base + ' (' + (n++) + ')' + ext;
-    }
-
-    var probe = { name: name, mime: file.type || 'application/octet-stream' };
-    var isText = (file.type || '').indexOf('text/') === 0 ||
-                 /\.(txt|md|csv|json|xml|log|sql|js|css|html|yml|yaml|ini|conf)$/i.test(file.name);
-
-    var rec = {
-      id: uid('f'),
-      name: name,
-      mime: probe.mime,
-      size: file.size,
-      kind: null,
-      ext: extOf(file.name),
-      body: payload,
-      thumb: null,
-      star: false,
-      trashed: false,
-      trashedAt: null,
-      enc: !!(payload && payload.d),
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
-
-    var commit = function () {
-      state.data.files.push(rec);
-      if (!persist()) { state.data.files.pop(); cb(false); }
-      else cb(true);
-    };
-
-    if (kindOf(rec) === 'image' && !isText) {
-      makeThumb(dataUrl, function (thumb) {
-        if (!thumb) { rec.thumb = null; return commit(); }
-        // تشفير المصغّرة أيضاً — لا نترك أي محتوى صور بصيغة صريحة
-        C.encryptText(A.getDataKey(), thumb).then(function (p) {
-          rec.thumb = p; rec._thumbUrl = thumb; commit();
-        }).catch(function () { rec.thumb = null; commit(); });
-      });
-    } else commit();
-  }
-
-  function makeThumb(dataUrl, cb) {
-    try {
-      var img = new Image();
-      img.onload = function () {
-        var max = 320, w = img.width, h = img.height;
-        var scale = Math.min(1, max / Math.max(w, h));
-        var cv = document.createElement('canvas');
-        cv.width = Math.max(1, Math.round(w * scale));
-        cv.height = Math.max(1, Math.round(h * scale));
-        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-        var out;
-        try { out = cv.toDataURL('image/jpeg', 0.72); } catch (e) { out = null; }
-        cb(out);
-      };
-      img.onerror = function () { cb(null); };
-      img.src = dataUrl;
-    } catch (e) { cb(null); }
-  }
-
-  function download(f) {
-    if (!lockedGuard()) return;
-    C.decryptText(A.getDataKey(), f.body).then(function (plain) {
-      var isText = (f.mime || '').indexOf('text/') === 0 ||
-                   /\.(txt|md|csv|json|xml|log|sql|js|css|html)$/i.test(f.name);
-      var blob;
-      if (isText) blob = new Blob([plain], { type: (f.mime || 'text/plain') + ';charset=utf-8' });
-      else blob = b64ToBlob(plain, f.mime);
-      triggerDownload(blob, f.name);
-      U.toast('جارٍ تنزيل «' + f.name + '»', 'info');
-    }).catch(function () {
-      U.toast('تعذّر فك التشفير — تأكد من كلمة المرور.', 'err');
-    });
-  }
-
-  function b64ToBlob(b64, mime) {
-    var bin = atob(b64 || ''), len = bin.length;
-    var ua = new Uint8Array(len);
-    for (var i = 0; i < len; i++) ua[i] = bin.charCodeAt(i);
-    return new Blob([ua], { type: mime || 'application/octet-stream' });
-  }
-
-  function triggerDownload(blob, name) {
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url; a.download = name || 'file';
-    document.body.appendChild(a); a.click();
-    setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
-  }
-
-  /* ---------- preview ---------- */
-  function preview(f) {
-    if (!lockedGuard()) return;
-    C.decryptText(A.getDataKey(), f.body).then(function (plain) {
-      var kind = kindOf(f);
-      var box = document.createElement('div');
-      var inner = '';
-
-      if (kind === 'image') {
-        inner = '<img src="data:' + f.mime + ';base64,' + plain + '" alt="' + esc(f.name) + '">';
-      } else if (kind === 'video') {
-        inner = '<video controls src="data:' + f.mime + ';base64,' + plain + '"></video>';
-      } else if (kind === 'audio') {
-        inner = '<audio controls src="data:' + f.mime + ';base64,' + plain + '"></audio>';
-      } else if (kind === 'pdf') {
-        inner = '<iframe src="data:application/pdf;base64,' + plain + '#toolbar=0"></iframe>';
-      } else {
-        var isText = (f.mime || '').indexOf('text/') === 0 ||
-                     /\.(txt|md|csv|json|xml|log|sql|js|css|html)$/i.test(f.name);
-        if (isText) {
-          inner = '<pre class="preview__text">' + esc(plain.slice(0, 120000)) +
-                  (plain.length > 120000 ? '\n\n… (تم اقتطاع العرض)' : '') + '</pre>';
-        } else {
-          inner = '<div class="preview__none">' + icon(KIND_ICON[kind]) +
-            '<p>لا يمكن معاينة هذا النوع داخل المتصفح.</p></div>';
-        }
-      }
-
-      box.innerHTML =
-        '<div class="preview">' + inner + '</div>' +
-        '<dl style="margin-top:18px">' +
-          row2('اسم الملف', f.name) +
-          row2('النوع', typeLabel(f) + (f.mime ? ' · ' + f.mime : '')) +
-          row2('الحجم', fmtBytes(f.size)) +
-          row2('أُنشئ', fmtDate(f.createdAt, true)) +
-          row2('آخر تعديل', fmtDate(f.updatedAt, true)) +
-          row2('الحالة', f.enc ? 'مشفّر AES‑256' : 'غير مشفّر') +
-        '</dl>';
-
-      U.open({
-        title: 'معاينة الملف',
-        body: box,
-        wide: kind === 'image' || kind === 'pdf' || kind === 'video',
-        actions: [
-          { label: 'تنزيل', cls: 'btn--primary', onClick: function () { download(f); } },
-          { label: 'إعادة تسمية', cls: 'btn--ghost', onClick: function () { U.close(); renameFile(f); } },
-          { label: 'إغلاق', cls: 'btn--ghost', onClick: function () { U.close(); } }
-        ]
-      });
-    }).catch(function (e) {
-      U.toast(e && e.message === 'DECRYPT_FAILED' ? 'فشل فك التشفير — ربما تغيّرت كلمة المرور.' : 'تعذّر فتح الملف.', 'err');
-    });
-  }
-
-  function row2(k, v) {
-    return '<div class="metarow"><dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd></div>';
-  }
-
-  function renameFile(f) {
-    U.promptField({
-      title: 'إعادة تسمية الملف',
-      label: 'اسم الملف',
-      value: f.name,
-      hint: 'الامتداد الأصلي يُحفظ تلقائياً.',
-      okLabel: 'حفظ'
-    }).then(function (v) {
-      if (!v) return;
-      if (extOf(f.name)) {
-        var e = '.' + extOf(f.name);
-        if (!v.toLowerCase().endsWith(e.toLowerCase())) v += e;
-      }
-      f.name = v; f.updatedAt = Date.now();
-      if (persist()) { render(); U.toast('تمت إعادة التسمية.', 'ok'); }
-    });
-  }
-
-  function trashFile(f) {
-    f.trashed = true; f.trashedAt = Date.now(); f.updatedAt = Date.now();
-    if (persist()) {
-      render();
-      U.toast('نُقل «' + f.name + '» إلى المحذوفات.', 'ok');
-    }
-  }
-
-  function toggleStar(f) {
-    f.star = !f.star; f.updatedAt = Date.now();
-    persist(); render();
-  }
-
-  /* ---------- notes ---------- */
-  function noteEditor(note) {
-    var isNew = !note;
-    var draft = note ? {
-      title: note.title || '',
-      plain: note.plain || '',
-      color: note.color || NOTE_COLORS[0]
-    } : { title: '', plain: '', color: NOTE_COLORS[0] };
-
-    var wrap = document.createElement('div');
-    wrap.className = 'mform';
-    wrap.innerHTML =
-      '<label class="field"><span class="field__label">العنوان</span>' +
-        '<input type="text" id="nTitle" maxlength="90" placeholder="مثال: ملخص زيارة المريض"></label>' +
-      '<label class="field"><span class="field__label">المحتوى</span>' +
-        '<textarea id="nBody" placeholder="اكتب هنا… النص يُشفَّر قبل الحفظ."></textarea></label>' +
-      '<div class="field"><span class="field__label">اللون</span><div class="swatches" id="nSwatch"></div></div>';
-
-    var sw = wrap.querySelector('#nSwatch');
-    NOTE_COLORS.forEach(function (c) {
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'swatch' + (c === draft.color ? ' is-on' : '');
-      b.style.background = c;
-      b.setAttribute('aria-label', 'لون');
-      b.addEventListener('click', function () {
-        draft.color = c;
-        $$('.swatch', sw).forEach(function (x) { x.classList.remove('is-on'); });
-        b.classList.add('is-on');
-      });
-      sw.appendChild(b);
-    });
-
-    wrap.querySelector('#nTitle').value = draft.title;
-    wrap.querySelector('#nBody').value = draft.plain;
-
-    U.open({
-      title: isNew ? 'ملاحظة جديدة' : 'تعديل الملاحظة',
-      body: wrap,
-      actions: [
-        { label: 'إلغاء', cls: 'btn--ghost', onClick: function () { U.close(); } },
-        { label: 'حفظ', cls: 'btn--primary', onClick: save }
-      ]
-    });
-
-    setTimeout(function () { wrap.querySelector('#nTitle').focus(); }, 70);
-
-    function save() {
-      var title = wrap.querySelector('#nTitle').value.trim();
-      var plain = wrap.querySelector('#nBody').value;
-      if (!title && !plain.trim()) { U.toast('اكتب عنواناً أو محتوى أولاً.', 'err'); return; }
-
-      if (!A.isUnlocked()) { U.close(); lockedGuard(); return; }
-
-      C.encryptText(A.getDataKey(), plain).then(function (payload) {
-        if (isNew) {
-          state.data.notes.push({
-            id: uid('n'), title: title || 'بدون عنوان',
-            content: payload, _plain: plain, color: draft.color,
-            star: false, trashed: false, trashedAt: null,
-            createdAt: Date.now(), updatedAt: Date.now()
-          });
-        } else {
-          note.title = title || 'بدون عنوان';
-          note.content = payload; note._plain = plain;
-          note.color = draft.color; note.updatedAt = Date.now();
-        }
-        if (persist()) {
-          U.close();
-          render();
-          U.toast(isNew ? 'أُنشئت الملاحظة وشُفّرت.' : 'حُفظت التعديلات.', 'ok');
-        } else if (isNew) { state.data.notes.pop(); }
-      }).catch(function () { U.toast('تعذّر تشفير الملاحظة.', 'err'); });
-    }
-  }
-
-  function deleteNote(n) {
-    n.trashed = true; n.trashedAt = Date.now(); n.updatedAt = Date.now();
-    if (persist()) { render(); U.toast('نُقلت الملاحظة إلى المحذوفات.', 'ok'); }
-  }
-
-  function pinNote(n) {
-    n.star = !n.star; n.updatedAt = Date.now();
-    persist(); render();
-    U.toast(n.star ? 'ثُبّتت الملاحظة.' : 'أُزيل التثبيت.', 'info');
-  }
-
-  /* ---------- trash ops ---------- */
-  function restoreItem(id) {
-    var f = findFile(id), n = findNote(id);
-    if (f) { f.trashed = false; f.trashedAt = null; f.updatedAt = Date.now(); }
-    else if (n) { n.trashed = false; n.trashedAt = null; n.updatedAt = Date.now(); }
-    else { U.toast('العنصر غير موجود.', 'err'); return; }
-    if (persist()) { render(); U.toast('تمت الاستعادة.', 'ok'); }
-  }
-
-  function purgeItem(id) {
-    U.confirm({
-      title: 'حذف نهائي',
-      message: 'سيُحذف هذا العنصر نهائياً من جهازك ولا يمكن استرجاعه. متأكد؟',
-      okLabel: 'حذف نهائي'
-    }).then(function (ok) {
-      if (!ok) return;
-      state.data.files = state.data.files.filter(function (x) { return x.id !== id; });
-      state.data.notes = state.data.notes.filter(function (x) { return x.id !== id; });
-      if (persist()) { render(); U.toast('حُذف نهائياً.', 'ok'); }
-    });
-  }
-
-  function emptyTrash() {
-    U.confirm({
-      title: 'إفراغ سلة المحذوفات',
-      message: 'سيُحذف كل ما في السلة نهائياً (' + trashed().length + ' عنصر).',
-      okLabel: 'إفراغ'
-    }).then(function (ok) {
-      if (!ok) return;
-      state.data.files = state.data.files.filter(function (f) { return !f.trashed; });
-      state.data.notes = state.data.notes.filter(function (n) { return !n.trashed; });
-      if (persist()) { render(); U.toast('أُفرغت السلة.', 'ok'); }
-    });
-  }
-
-  /* ---------- account ops ---------- */
-  function onProfileSubmit(e) {
-    e.preventDefault();
-    var name = $('#pfName').value.trim();
-    var mail = $('#pfMail').value.trim();
-    if (!name) { U.toast('الاسم مطلوب.', 'err'); return; }
-    A.updateProfile({ name: name, email: mail })
-      .then(function () { U.toast('حُفظت بيانات الحساب.', 'ok'); render(); })
-      .catch(function (err) { U.toast(err.message, 'err'); });
-  }
-
-  function onPasswordSubmit(e) {
-    e.preventDefault();
-    var o = $('#pwOld').value, n1 = $('#pwNew').value, n2 = $('#pwNew2').value;
-    if (n1 !== n2) { U.toast('كلمتا المرور الجديدتان غير متطابقتين.', 'err'); return; }
-    if (n1.length < 8) { U.toast('كلمة المرور 8 محارف على الأقل.', 'err'); return; }
-    var btn = e.target.querySelector('button[type=submit]');
-    btn.classList.add('is-busy');
-    A.changePassword(o, n1).then(function (count) {
-      btn.classList.remove('is-busy');
-      e.target.reset();
-      U.toast('غيّرت كلمة المرور وأُعيد تشفير ' + count + ' عنصراً.', 'ok');
-      // إعادة تحميل من القاعدة لأن المحتوى أُعيد تشفيره بمفتاح جديد
-      load();
-      hydrate().then(function () { render(); });
-    }).catch(function (err) {
-      btn.classList.remove('is-busy');
-      U.toast(err.message || 'تعذّر التغيير.', 'err');
-    });
-  }
-
-  function exportBackup() {
-    var u = A.getUser();
-    var dump = {
-      app: 'malafaty', version: DB.SCHEMA, exportedAt: new Date().toISOString(),
-      account: { name: u.name, email: u.email, createdAt: u.createdAt },
-      note: 'المحتوى مشفّر — لفكّه استورد الملف ضمن نفس المفتاح.',
-      files: state.data.files.map(function (f) {
-        return { name: f.name, mime: f.mime, size: f.size, encryptedBody: f.body, createdAt: f.createdAt };
-      }),
-      notes: state.data.notes.map(function (n) {
-        return { title: n.title, color: n.color, encryptedContent: n.content, createdAt: n.createdAt };
+    var tabs = [
+      { key: 'overview', label: t('tabOverview') },
+      { key: 'visits', label: t('tabVisits') },
+      { key: 'notes', label: t('tabNotes') },
+    ]
+      .map(function (tab) {
+        return (
+          '<button class="tab" type="button" role="tab" data-act="tab" data-tab="' + tab.key + '" aria-selected="' +
+          (p.tab === tab.key ? 'true' : 'false') + '">' + esc(tab.label) + '</button>'
+        );
       })
-    };
-    var blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
-    triggerDownload(blob, 'malafaty-backup-' + new Date().toISOString().slice(0, 10) + '.json');
-    U.toast('صُدّرت النسخة الاحتياطية.', 'ok');
+      .join('');
+
+    var panel = p.tab === 'visits' ? portalVisits(visits) : p.tab === 'notes' ? portalNotes(notes) : portalOverview(profile, latest);
+
+    return (
+      '<div class="portal">' +
+      '<header class="top"><div class="wrap top__in">' + brandMarkup() +
+      '<div class="top__spacer"></div>' +
+      '<div class="top__actions">' + connectionChip() + langButton() +
+      '<button class="btn btn--sm btn--ghost" type="button" data-act="logout">' + icon('logout', 'ic') + esc(t('logout')) + '</button>' +
+      '</div></div></header>' +
+
+      '<main id="main">' +
+      '<div class="portal__hero"><div class="wrap portal__hero-in">' +
+      '<span class="avatar" aria-hidden="true">' + icon('user', 'ic ic--lg') + '</span>' +
+      '<div><h1>' + esc(t('greeting')) + '</h1>' +
+      '<p>' + esc(docLabel(profile.docType)) + ' · <span dir="ltr">' + esc(profile.masked || '—') + '</span>' +
+      (profile.createdAt ? ' · ' + esc(t('memberSince')) + ' ' + esc(formatDate(profile.createdAt)) : '') +
+      '</p></div>' +
+      '<div class="top__spacer"></div>' +
+      '</div></div>' +
+
+      '<div class="wrap">' + stats +
+      '<div class="tabs" role="tablist">' + tabs + '</div>' +
+      '<div class="panel">' + panel + '</div>' +
+      '</div>' +
+      '</main>' +
+      footer() +
+      '</div>'
+    );
   }
 
-  function deleteAccount() {
-    U.confirm({
-      heading: 'حذف الحساب',
-      title: 'سيُمحى حسابك بالكامل',
-      message: 'كل ملفاتك وملاحظاتك ستُحذف من هذا الجهاز فوراً. لا يمكن التراجع. هل أنت متأكد؟',
-      okLabel: 'نعم، احذف كل شيء'
-    }).then(function (ok) {
-      if (!ok) return;
-      A.deleteAccount().then(function () {
-        U.toast('حُذف الحساب وكل بياناته.', 'ok');
-        showAuth('signup');
-      }).catch(function (e) { U.toast(e.message, 'err'); });
-    });
-  }
+  function portalOverview(profile, latest) {
+    var rows = [
+      { label: t('labelDocType'), value: docLabel(profile.docType) },
+      { label: t('labelDocNo'), value: '<span dir="ltr">' + esc(profile.masked || '—') + '</span>' },
+      { label: t('labelDob'), value: esc(formatBirthDate(profile.birthDate)) },
+      { label: t('labelPhone'), value: '<span dir="ltr">' + esc(formatPhone(profile.phone)) + '</span>' },
+      { label: t('labelCategory'), value: esc(categoryLabel(profile.category)) },
+      { label: t('labelCreated'), value: esc(formatDate(profile.createdAt)) },
+    ];
 
-  /* ============================================================
-     GLOBAL EVENT DELEGATION
-     ============================================================ */
-  function onDocClick(e) {
-    var t = e.target;
-
-    var navBtn = t.closest('[data-nav]');
-    if (navBtn) { e.preventDefault(); go(navBtn.dataset.nav); return; }
-
-    var closeM = t.closest('[data-close-modal]');
-    if (closeM) { U.close(); return; }
-
-    var filterBtn = t.closest('[data-filter]');
-    if (filterBtn) { state.filter = filterBtn.dataset.filter; render(); return; }
-
-    var layBtn = t.closest('[data-layout]');
-    if (layBtn) {
-      state.layout = layBtn.dataset.layout;
-      state.data.prefs.layout = state.layout;
-      persist(); render(); return;
+    if (profile.insurer) {
+      rows.push({ label: t('labelInsurer'), value: esc(profile.insurer) });
+      rows.push({ label: t('labelPolicy'), value: '<span dir="ltr">' + esc(profile.policyNumber || '—') + '</span>' });
     }
 
-    var act = t.closest('[data-act]');
-    if (act) { handleAction(act.dataset.act, act.dataset.id, e); return; }
+    var latestBlock = latest
+      ? '<div class="card" style="margin-top:18px"><div class="card__body">' +
+        '<h2 style="font-size:15px;font-weight:600;color:var(--ink);margin-bottom:12px">' + esc(t('statLast')) + '</h2>' +
+        visitRow(latest) + '</div></div>'
+      : '';
 
-    var openBtn = t.closest('[data-open]');
-    if (openBtn) {
-      var f = findFile(openBtn.dataset.open);
-      if (f) preview(f);
-      return;
-    }
-  }
-
-  function handleAction(act, id, e) {
-    if (e) e.preventDefault();
-
-    switch (act) {
-      case 'pick': pick(); break;
-      case 'clear-filters':
-        state.query = ''; state.filter = 'all';
-        $('#globalSearch').value = '';
-        render(); break;
-      case 'new-note':
-        if (!lockedGuard()) return;
-        noteEditor(null); break;
-      case 'lock':
-        closeUserMenu();
-        A.lock();
-        scrubHydration();
-        render();
-        askUnlock(); break;
-      case 'ask-unlock': askUnlock(); break;
-      case 'logout':
-        closeUserMenu();
-        U.confirm({ title: 'تسجيل الخروج', message: 'ستحتاج إلى كلمة المرور للدخول مرة أخرى.',
-                    okLabel: 'خروج', danger: false }).then(function (ok) {
-          if (!ok) return;
-          A.logout(); showAuth('login'); U.toast('تم تسجيل الخروج بأمان.', 'ok');
-        }); break;
-      case 'delete-account': deleteAccount(); break;
-      case 'export': exportBackup(); break;
-      case 'empty-trash': emptyTrash(); break;
-
-      case 'preview': { var f = findFile(id); if (f) preview(f); break; }
-      case 'download': { var f2 = findFile(id); if (f2) download(f2); break; }
-      case 'rename':   { var f3 = findFile(id); if (f3) renameFile(f3); break; }
-      case 'trash':    { var f4 = findFile(id); if (f4) trashFile(f4); break; }
-      case 'star':     { var f5 = findFile(id); if (f5) toggleStar(f5); break; }
-      case 'restore':  restoreItem(id); break;
-      case 'purge':    purgeItem(id); break;
-
-      case 'edit-note': { var n = findNote(id); if (n) noteEditor(n); break; }
-      case 'del-note':  { var n2 = findNote(id); if (n2) deleteNote(n2); break; }
-      case 'pin-note':  { var n3 = findNote(id); if (n3) pinNote(n3); break; }
-    }
-  }
-
-  /* ---------------- user menu ---------------- */
-  function closeUserMenu() {
-    var pop = $('#userMenuPop'); if (pop) pop.hidden = true;
-    var btn = $('#userMenuBtn'); if (btn) btn.setAttribute('aria-expanded', 'false');
-  }
-
-  /* ============================================================
-     AUTH SCREEN LOGIC
-     ============================================================ */
-  function showAuth(tab) {
-    $('#appScreen').hidden = true;
-    $('#authScreen').hidden = false;
-    setAuthTab(tab || 'login');
-    document.title = 'ملفاتي — الدخول';
-  }
-
-  function showApp() {
-    if (!$('#appScreen').hidden) { ensureOwner(); return; }   // معاملة idempotent
-    $('#authScreen').hidden = true;
-    $('#appScreen').hidden = false;
-    document.title = 'ملفاتي — مساحتك';
-    load();
-    go(readHash());
-    // إعادة رسم بعد اكتمال فك التشفير للمصغّرات والملاحظات
-    hydrate().then(function () { if (A.isAuthed()) render(); });
-  }
-
-  function setAuthTab(tab) {
-    var seg = $('.seg');
-    seg.dataset.tab = tab;
-    $$('.seg__btn').forEach(function (b) {
-      var on = b.dataset.authTab === tab;
-      b.classList.toggle('is-active', on);
-      b.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    $('#loginForm').hidden = tab !== 'login';
-    $('#signupForm').hidden = tab !== 'signup';
-    $('#authTitle').textContent = tab === 'login' ? 'مرحباً بعودتك' : 'أنشئ مساحتك الخاصة';
-    $('#authSub').textContent = tab === 'login'
-      ? 'سجّل دخولك للوصول إلى ملفاتك وملاحظاتك الخاصة.'
-      : 'حساب ببريدك وكلمة مرورك — ولا يستطيع أحد غيرك رؤية بياناتك.';
-    hideAlert();
-  }
-
-  function showAlert(msg) {
-    var el = $('#authAlert');
-    el.innerHTML = icon('i-alert') + '<span>' + esc(msg) + '</span>';
-    el.hidden = false;
-    el.className = 'alert alert--error';
-  }
-  function hideAlert() { var el = $('#authAlert'); if (el) { el.hidden = true; el.innerHTML = ''; } }
-
-  function busy(btn, on) {
-    btn.classList.toggle('is-busy', on);
-    btn.disabled = on;
-  }
-
-  function bindAuth() {
-    $$('.seg__btn').forEach(function (b) {
-      b.addEventListener('click', function () { setAuthTab(b.dataset.authTab); });
-    });
-
-    $$('[data-toggle-pw]').forEach(function (b) {
-      b.addEventListener('click', function () {
-        var inp = document.getElementById(b.dataset.togglePw);
-        inp.type = inp.type === 'password' ? 'text' : 'password';
-        b.setAttribute('aria-label', inp.type === 'password' ? 'إظهار كلمة المرور' : 'إخفاء كلمة المرور');
-      });
-    });
-
-    $('#loginForm').addEventListener('submit', function (e) {
-      e.preventDefault();
-      var btn = $('#loginBtn');
-      hideAlert();
-      busy(btn, true);
-      A.login({ email: $('#loginEmail').value, password: $('#loginPass').value })
-        .then(function () {
-          busy(btn, false);
-          $('#loginForm').reset();
-          U.toast('أهلاً بعودتك — تم فتح مساحتك.', 'ok');
-          showApp();
+    return (
+      '<div class="card"><div class="card__body">' +
+      '<h2 style="font-size:15px;font-weight:600;color:var(--ink);margin-bottom:14px">' + esc(t('profileTitle')) + '</h2>' +
+      '<dl class="kv">' +
+      rows
+        .map(function (row) {
+          return '<div><dt>' + esc(row.label) + '</dt><dd>' + row.value + '</dd></div>';
         })
-        .catch(function (err) {
-          busy(btn, false);
-          showAlert(err.message || 'تعذّر تسجيل الدخول.');
-        });
-    });
-
-    $('#signupForm').addEventListener('submit', function (e) {
-      e.preventDefault();
-      var btn = $('#signBtn');
-      hideAlert();
-      busy(btn, true);
-      A.register({
-        name: $('#signName').value,
-        email: $('#signEmail').value,
-        password: $('#signPass').value,
-        confirm: $('#signPass2').value
-      }).then(function () {
-        busy(btn, false);
-        $('#signupForm').reset();
-        U.toast('تم إنشاء حسابك — مساحتك جاهزة!', 'ok');
-        showApp();
-      }).catch(function (err) {
-        busy(btn, false);
-        showAlert(err.message || 'تعذّر إنشاء الحساب.');
-      });
-    });
-
-    $('#signPass').addEventListener('input', function () {
-      var s = C.passwordScore(this.value);
-      var el = $('#strength');
-      el.dataset.level = s;
-      el.querySelector('.strength__txt').textContent =
-        ['قوة كلمة المرور','ضعيفة','متوسطة','جيدة','ممتازة'][s];
-    });
+        .join('') +
+      '</dl>' +
+      '</div></div>' +
+      latestBlock +
+      '<div class="bar" style="margin-top:20px;justify-content:flex-end">' +
+      '<button class="btn btn--outline btn--sm" type="button" data-act="export">' + icon('download', 'ic') + esc(t('exportVault')) + '</button>' +
+      '</div>'
+    );
   }
 
-  /* ============================================================
-     BOOT
-     ============================================================ */
-  function boot() {
-    if (!C.supported()) {
-      document.body.innerHTML =
-        '<div style="max-width:520px;margin:80px auto;text-align:center;font-family:system-ui;padding:20px">' +
-        '<h1 style="color:#0E8C96">ملفاتي</h1>' +
-        '<p style="color:#5B7484;line-height:1.9">متصفحك لا يدعم WebCrypto المطلوب لتشفير المحتوى. ' +
-        'الرجاء استخدام Chrome أو Edge أو Firefox بأحدث إصدار، وعلى صفحة تُشغَّل عبر HTTPS أو localhost.</p></div>';
+  function visitRow(visit) {
+    var sync = visit.sync || {};
+    var hasSync = !!sync.raqeem || !!sync.sehhaty;
+    var chips = hasSync
+      ? ['raqeem', 'sehhaty']
+          .map(function (key) {
+            var entry = sync[key];
+            return entry ? statusChip(entry.status) : statusChip('offline');
+          })
+          .join('')
+      : statusChip('offline');
+
+    var title = visit.reason ? esc(visit.reason) : esc(t('generalVisit'));
+    var meta = esc(t('visitQueue')) + ' ' + esc(visit.queueNumber) + ' · ' +
+      esc(formatDate(visit.createdAt)) + ' · ' + esc(formatTime(visit.createdAt));
+
+    return (
+      '<div class="visit">' +
+      '<div class="visit__q" aria-hidden="true">' + esc(visit.queueNumber) + '</div>' +
+      '<div class="visit__main"><b>' + title + '</b>' +
+      '<span>' + meta + '</span></div>' +
+      '<span class="chip">' + esc(t(VISIT_STATUS[visit.status] || 'stWaiting')) + '</span>' +
+      '<div class="visit__sync">' + chips + '</div>' +
+      '</div>'
+    );
+  }
+
+  function portalVisits(visits) {
+    if (!visits.length) {
+      return (
+        '<div class="empty"><div class="empty__ic">' + icon('calendar', 'ic') + '</div>' +
+        '<h2>' + esc(t('noVisits')) + '</h2><p>' + esc(t('noVisitsSub')) + '</p>' +
+        '<div class="bar" style="justify-content:center;margin-top:18px">' +
+        '<button class="btn btn--sm" type="button" data-act="go" data-screen="kiosk">' + esc(t('heroCta1')) + '</button></div></div>'
+      );
+    }
+    return '<div class="visit-list">' + visits.map(visitRow).join('') + '</div>';
+  }
+
+  function portalNotes(notes) {
+    var list = notes.length
+      ? '<div class="grid" style="gap:12px">' +
+        notes
+          .map(function (note) {
+            return (
+              '<article class="card"><div class="card__body" style="padding:18px 20px">' +
+              '<div style="display:flex;align-items:flex-start;gap:12px">' +
+              '<div style="flex:1;min-width:0">' +
+              '<b style="display:block;font-size:14.5px;color:var(--ink)">' + esc(note.title) + '</b>' +
+              '<p style="margin-top:4px;font-size:13.5px;color:var(--muted);white-space:pre-wrap">' + esc(note.body) + '</p>' +
+              '<span style="display:block;margin-top:8px;font-size:11.5px;color:var(--faint)">' + esc(formatDate(note.createdAt)) + '</span>' +
+              '</div>' +
+              '<button class="iconbtn" type="button" data-act="delete-note" data-id="' + esc(note.id) + '" aria-label="' + esc(t('delete')) + '">' + icon('trash') + '</button>' +
+              '</div></div></article>'
+            );
+          })
+          .join('') +
+        '</div>'
+      : '<div class="empty"><div class="empty__ic">' + icon('file', 'ic') + '</div>' +
+        '<h2>' + esc(t('noNotes')) + '</h2><p>' + esc(t('noNotesSub')) + '</p></div>';
+
+    return (
+      '<div class="notice notice--ok" style="margin-bottom:16px">' + icon('shield', 'ic') +
+      '<div><b>' + esc(t('notesTitle')) + '</b><br>' + esc(t('notesSub')) + '</div></div>' +
+      list +
+      '<div class="bar" style="margin-top:18px;justify-content:flex-end">' +
+      '<button class="btn btn--sm" type="button" data-act="add-note">' + icon('plus', 'ic') + esc(t('addNote')) + '</button>' +
+      '</div>'
+    );
+  }
+
+  // ─── الرسم ──────────────────────────────────────────────────────────────────
+
+  function render() {
+    document.documentElement.lang = T.lang;
+    document.documentElement.dir = T.dir;
+
+    var app = $('#app');
+    if (state.screen === 'kiosk') app.innerHTML = viewKiosk();
+    else if (state.screen === 'login') app.innerHTML = viewLogin();
+    else if (state.screen === 'portal' && state.portal) app.innerHTML = viewPortal();
+    else app.innerHTML = viewHome();
+
+    bindScreen();
+  }
+
+  function bindScreen() {
+    if (state.screen === 'kiosk') bindKiosk();
+    else if (state.screen === 'login') bindLogin();
+  }
+
+  // ─── ربط أحداث الكشك ────────────────────────────────────────────────────────
+
+  function bindKiosk() {
+    var k = state.kiosk;
+
+    if (k.step === 2) {
+      var typeSelect = $('#fkDocType');
+      if (typeSelect) {
+        typeSelect.addEventListener('change', function () {
+          k.docType = typeSelect.value;
+          k.docNo = '';
+          k.errors = {};
+          render();
+          var input = $('#fkDocNo');
+          if (input) input.focus();
+        });
+      }
+
+      var docInput = $('#fkDocNo');
+      if (docInput) {
+        docInput.addEventListener('input', function () {
+          k.docNo = normalizeDoc(k.docType, docInput.value);
+          docInput.value = k.docNo;
+        });
+        docInput.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            var next = $('[data-act="kiosk-step2-next"]');
+            if (next) next.click();
+          }
+        });
+      }
       return;
     }
 
-    bindAuth();
+    if (k.step === 3) {
+      var day = $('#fkDay');
+      var month = $('#fkMonth');
+      var year = $('#fkYear');
+      if (day) day.addEventListener('change', function () { k.dob.d = day.value; });
+      if (month) month.addEventListener('change', function () { k.dob.m = month.value; });
+      if (year) year.addEventListener('change', function () { k.dob.y = year.value; });
 
-    // استعادة الجلسة المحفوظة
-    A.restore().then(function (user) {
-      if (user) {
-        // جلسة صالحة لكن المفتاح يحتاج كلمة المرور
-        showApp();
-        setTimeout(function () { askUnlock(); }, 350);
-      } else {
-        showAuth('login');
+      var phone = $('#fkPhone');
+      if (phone) {
+        phone.addEventListener('input', function () {
+          k.phone = normalizePhone(phone.value);
+          phone.value = k.phone;
+        });
       }
-    }).catch(function () { showAuth('login'); });
 
-    // استماع أحداث المصادقة — تُبقي شاشات التطبيق متزامنة مع حالة الجلسة
-    A.on(function (evt) {
-      if (evt.type === 'logout' || evt.type === 'deleted') {
-        state.data = { files: [], notes: [] };
-        state.owner = null;
-        showAuth(evt.type === 'logout' ? 'login' : 'signup');
+      var insurer = $('#fkInsurer');
+      if (insurer) insurer.addEventListener('input', function () { k.insurer = insurer.value.trim(); });
+
+      var policy = $('#fkPolicy');
+      if (policy) policy.addEventListener('input', function () { k.policy = policy.value.trim(); });
+
+      var pin = $('#fkPin');
+      if (pin) pin.addEventListener('input', function () { k.pin = pin.value; });
+
+      var pin2 = $('#fkPin2');
+      if (pin2) pin2.addEventListener('input', function () { k.pin2 = pin2.value; });
+
+      var consent = $('#fkConsent');
+      if (consent) consent.addEventListener('change', function () { k.consent = consent.checked; });
+    }
+  }
+
+  // ─── ربط أحداث الدخول ───────────────────────────────────────────────────────
+
+  function bindLogin() {
+    var l = state.login;
+
+    var type = $('#lgType');
+    if (type) {
+      type.addEventListener('change', function () {
+        l.docType = type.value;
+        l.docNo = '';
+        $('#lgDoc').value = '';
+        l.error = '';
+      });
+    }
+
+    var doc = $('#lgDoc');
+    if (doc) {
+      doc.addEventListener('input', function () {
+        l.docNo = normalizeDoc(l.docType, doc.value);
+        doc.value = l.docNo;
+      });
+      doc.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') doLogin();
+      });
+    }
+
+    var pin = $('#lgPin');
+    if (pin) {
+      pin.addEventListener('input', function () { l.pin = pin.value; });
+      pin.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') doLogin();
+      });
+    }
+  }
+
+  // ─── التنقل ─────────────────────────────────────────────────────────────────
+
+  function go(screen) {
+    if (screen === 'portal' && !state.portal) screen = 'login';
+    state.screen = screen;
+    if (screen === 'kiosk' && state.kiosk.step === 4 && !state.kiosk.result) {
+      state.kiosk = freshKiosk();
+    }
+    render();
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }
+
+  // ─── التسجيل ────────────────────────────────────────────────────────────────
+
+  function buildPayload() {
+    var k = state.kiosk;
+    var payload = {
+      documentType: k.docType,
+      documentNumber: k.docNo,
+      category: k.category,
+      phone: k.phone,
+      pin: k.pin,
+      consent: k.consent === true,
+    };
+
+    if (k.insurer) payload.insurer = k.insurer;
+    if (k.policy) payload.policyNumber = k.policy;
+
+    if (k.cal === 'hijri') {
+      if (k.dob.y && k.dob.m && k.dob.d) {
+        payload.birthDateHijri = { year: Number(k.dob.y), month: Number(k.dob.m), day: Number(k.dob.d) };
+      }
+    } else if (k.dob.y && k.dob.m && k.dob.d) {
+      payload.birthDate = k.dob.y + '-' + String(k.dob.m).padStart(2, '0') + '-' + String(k.dob.d).padStart(2, '0');
+    }
+
+    return payload;
+  }
+
+  /** فحص محلي محدود — يُستخدم فقط عند انعدام الخادم. التحقق المرجعي على الخادم. */
+  function localCheck(payload) {
+    var errors = {};
+    var type = payload.documentType;
+    var number = payload.documentNumber;
+
+    if (!number) errors.docNo = 'eRequired';
+    else if (type === 'nid' && !/^1\d{9}$/.test(number)) errors.docNo = 'eNid';
+    else if (type === 'iqama' && !/^2\d{9}$/.test(number)) errors.docNo = 'eIqama';
+    else if (type === 'passport' && !/^[A-Za-z0-9]{6,12}$/.test(number)) errors.docNo = 'ePass';
+
+    if (payload.category === 'citizen' && type !== 'nid') errors.docType = 'eCitizenDoc';
+
+    if (!payload.birthDate && !payload.birthDateHijri) errors.birthDate = 'eRequired';
+    if (!/^05\d{8}$/.test(payload.phone)) errors.phone = payload.phone ? 'ePhone' : 'eRequired';
+    if (payload.category === 'insured') {
+      if (!payload.insurer) errors.insurer = 'eRequired';
+      if (!payload.policyNumber) errors.policyNumber = 'eRequired';
+    }
+    if (!payload.pin || payload.pin.length < 6) errors.pin = 'ePinShort';
+    if (state.kiosk.pin2 !== payload.pin) errors.pin2 = 'ePinMatch';
+    if (payload.consent !== true) errors.consent = 'eConsent';
+
+    return errors;
+  }
+
+  function mapServerFields(fields) {
+    var mapped = {};
+    Object.keys(fields || {}).forEach(function (key) {
+      var target =
+        key === 'documentNumber' ? 'docNo'
+          : key === 'documentType' ? 'docType'
+            : key === 'birthDate' ? 'birthDate'
+              : key;
+      mapped[target] = fields[key];
+    });
+    return mapped;
+  }
+
+  function buildVault(profile, visits, token, mode) {
+    return {
+      profile: profile,
+      visits: visits || [],
+      notes: [],
+      token: token || null,
+      mode: mode || 'local',
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  function profileFromPayload(payload, masked, createdAt) {
+    return {
+      docType: payload.documentType,
+      docNumber: payload.documentNumber,
+      masked: masked,
+      birthDate: payload.birthDate || '',
+      phone: payload.phone,
+      category: payload.category,
+      insurer: payload.insurer || '',
+      policyNumber: payload.policyNumber || '',
+      createdAt: createdAt || new Date().toISOString(),
+    };
+  }
+
+  function mergeVisits(existing, incoming) {
+    var byId = {};
+    (existing || []).forEach(function (visit) { byId[visit.id] = visit; });
+    (incoming || []).forEach(function (visit) {
+      if (visit && visit.id) {
+        var previous = byId[visit.id];
+        byId[visit.id] = Object.assign({}, previous, visit);
+      }
+    });
+    return Object.keys(byId)
+      .map(function (id) { return byId[id]; })
+      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+  }
+
+  async function persistLocal(payload, patient, visit, token, mode) {
+    var existing = await Store.findAccount(payload.documentType, payload.documentNumber);
+
+    if (existing) {
+      var opened = await Store.unlock(existing, payload.pin);
+      var profile = Object.assign(
+        profileFromPayload(payload, existing.masked, opened.data.profile ? opened.data.profile.createdAt : null),
+        patient ? { masked: patient.maskedDocumentNumber } : {}
+      );
+      var data = {
+        profile: Object.assign({}, opened.data.profile || {}, profile),
+        visits: mergeVisits(opened.data.visits, visit ? [visit] : []),
+        notes: opened.data.notes || [],
+        token: token || opened.data.token || null,
+        mode: mode,
+        updatedAt: new Date().toISOString(),
+      };
+      await Store.save(existing, opened.key, data);
+      return { account: existing, key: opened.key, data: data };
+    }
+
+    var created = await Store.createAccount({
+      docType: payload.documentType,
+      docNumber: payload.documentNumber,
+      pin: payload.pin,
+      data: buildVault(
+        profileFromPayload(payload, patient ? patient.maskedDocumentNumber : C.mask(payload.documentNumber), patient ? patient.createdAt : null),
+        visit ? [visit] : [],
+        token,
+        mode
+      ),
+    });
+
+    return created;
+  }
+
+  async function submitRegistration() {
+    var k = state.kiosk;
+    if (k.busy) return;
+
+    k.errors = {};
+    var payload = buildPayload();
+
+    if (k.pin2 !== k.pin) k.errors.pin2 = 'ePinMatch';
+    if (Object.keys(k.errors).length) {
+      render();
+      return;
+    }
+
+    k.busy = true;
+    render();
+
+    try {
+      if (!Api.checked) await Api.init();
+
+      if (Api.online) {
+        var registration;
+        try {
+          registration = await Api.register(payload);
+        } catch (error) {
+          if (error.fields) {
+            k.errors = mapServerFields(error.fields);
+            k.busy = false;
+            render();
+            return;
+          }
+          throw error;
+        }
+
+        var visitResponse = null;
+        try {
+          visitResponse = await Api.createVisit(
+            { patientId: registration.patient.id, reason: null },
+            registration.token
+          );
+        } catch (error) {
+          visitResponse = null;
+        }
+
+        var visit = visitResponse
+          ? Object.assign({}, visitResponse.visit, { sync: visitResponse.sync })
+          : null;
+
+        var session = await persistLocal(
+          payload,
+          registration.patient,
+          visit,
+          registration.token,
+          'online'
+        );
+
+        k.result = {
+          queueNumber: visit ? visit.queueNumber : '—',
+          sync: visitResponse ? visitResponse.sync : {},
+          offline: false,
+        };
+        k.session = session;
+        k.busy = false;
+        k.step = 4;
+        render();
+        toast(t('registered'), 'ok');
         return;
       }
-      // دخول ناجح (سواء عبر النموذج أو عبر API) ⟵ أعِرض التطبيق
-      if (evt.type === 'login' && $('#authScreen').hidden === false) showApp();
-      // استئناف جلسة محفوظة ⟵ أعِرض التطبيق ثم اطلب فك القفل
-      if (evt.type === 'restore' && $('#authScreen').hidden === false && $('#appScreen').hidden) {
-        showApp();
-        setTimeout(function () { if (A.isAuthed() && !A.isUnlocked()) askUnlock(); }, 350);
-      }
-    });
 
-    /* ---- app-level events ---- */
-    document.addEventListener('click', onDocClick);
-
-    $('#menuBtn').addEventListener('click', function () {
-      var app = $('#appScreen');
-      var open = app.classList.toggle('is-nav');
-      $('#scrim').hidden = !open;
-      this.setAttribute('aria-expanded', open ? 'true' : 'false');
-    });
-    $('#scrim').addEventListener('click', function () {
-      $('#appScreen').classList.remove('is-nav');
-      this.hidden = true;
-      var mb = $('#menuBtn'); if (mb) mb.setAttribute('aria-expanded', 'false');
-    });
-
-    $('#userMenuBtn').addEventListener('click', function (e) {
-      e.stopPropagation();
-      var pop = $('#userMenuPop');
-      pop.hidden = !pop.hidden;
-      this.setAttribute('aria-expanded', pop.hidden ? 'false' : 'true');
-    });
-    document.addEventListener('click', function (e) {
-      if (!e.target.closest('#userMenu')) closeUserMenu();
-    });
-
-    $('#filePicker').addEventListener('change', function () {
-      handleFiles(this.files);
-    });
-
-    var searchTimer;
-    $('#globalSearch').addEventListener('input', function () {
-      var v = this.value;
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(function () {
-        state.query = v.trim();
-        if (state.view !== 'files' && state.view !== 'notes' && state.query) state.view = 'files';
+      // ─── وضع محلي (لا يوجد خادم) ───
+      var errors = localCheck(payload);
+      if (Object.keys(errors).length) {
+        k.errors = errors;
+        k.busy = false;
         render();
-      }, 180);
-    });
+        return;
+      }
 
-    document.addEventListener('change', function (e) {
-      if (e.target.matches('[data-sort]')) { state.sort = e.target.value; render(); }
-    });
+      var localVisit = {
+        id: 'local-' + Date.now().toString(36),
+        queueNumber: 101,
+        status: 'waiting',
+        reason: null,
+        createdAt: new Date().toISOString(),
+        sync: {},
+      };
 
-    window.addEventListener('hashchange', function () {
-      if (A.isAuthed()) go(readHash());
-    });
+      var localSession = await persistLocal(
+        payload,
+        null,
+        localVisit,
+        null,
+        'local'
+      );
 
-    // تحديث الأوقت النسبي — فقط حين تكون الواجهة خالية تماماً
-    setInterval(function () {
-      if (!A.isAuthed()) return;
-      if (!$('#modal').hidden) return;                 // نافذة مفتوحة
-      if ($('#userMenuPop') && !$('#userMenuPop').hidden) return;
-      if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
-      if (state.view === 'dashboard' || state.view === 'trash') render();
-    }, 60000);
+      localSession.data.visits = mergeVisits(localSession.data.visits, [localVisit]);
+      localVisit.queueNumber = 100 + localSession.data.visits.length;
+      await Store.save(localSession.account, localSession.key, localSession.data);
+
+      k.result = { queueNumber: localVisit.queueNumber, sync: {}, offline: true };
+      k.session = localSession;
+      k.busy = false;
+      k.step = 4;
+      render();
+    } catch (error) {
+      k.busy = false;
+      k.errors = {};
+      render();
+      toast(errText(error && error.code ? error.code : 'errGeneric'), 'err');
+    }
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  // ─── الدخول ─────────────────────────────────────────────────────────────────
 
-  global.MFApp = { go: go, render: render };
-})(window);
+  async function doLogin() {
+    var l = state.login;
+    if (l.busy) return;
+
+    l.error = '';
+
+    if (!l.docNo || !l.pin) {
+      l.error = 'errRequired';
+      render();
+      return;
+    }
+
+    l.busy = true;
+    render();
+
+    try {
+      var account = await Store.findAccount(l.docType, l.docNo);
+
+      if (account) {
+        try {
+          var opened = await Store.unlock(account, l.pin);
+          l.busy = false;
+          l.pin = '';
+          openPortal(account, opened.key, opened.data);
+          return;
+        } catch (error) {
+          l.busy = false;
+          l.error = 'errInvalidPin';
+          render();
+          return;
+        }
+      }
+
+      if (!Api.checked) await Api.init();
+
+      if (!Api.online) {
+        l.busy = false;
+        l.error = 'loginNoVault';
+        render();
+        return;
+      }
+
+      var response;
+      try {
+        response = await Api.resume(l.docType, l.docNo, l.pin);
+      } catch (error) {
+        l.busy = false;
+        l.error = error.code === 'INVALID_PIN' ? 'errInvalidPin'
+          : error.code === 'PATIENT_NOT_FOUND' ? 'loginNoVault'
+            : error.code || 'errGeneric';
+        render();
+        return;
+      }
+
+      var created = await Store.createAccount({
+        docType: l.docType,
+        docNumber: l.docNo,
+        pin: l.pin,
+        data: buildVault(
+          profileFromPayload(
+            {
+              documentType: l.docType,
+              documentNumber: l.docNo,
+              phone: response.patient.phone,
+              category: response.patient.category,
+              birthDate: response.patient.birthDate,
+              insurer: response.patient.insurer,
+              policyNumber: response.patient.policyNumber,
+            },
+            response.patient.maskedDocumentNumber,
+            response.patient.createdAt
+          ),
+          response.visits || [],
+          response.token,
+          'online'
+        ),
+      });
+
+      l.busy = false;
+      l.pin = '';
+      openPortal(created.account, created.key, created.data);
+    } catch (error) {
+      l.busy = false;
+      l.error = error && error.code ? error.code : 'errGeneric';
+      render();
+    }
+  }
+
+  function openPortal(account, key, data) {
+    state.portal = { account: account, key: key, data: data, tab: 'overview' };
+    state.screen = 'portal';
+    render();
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }
+
+  async function saveVault(changes) {
+    var p = state.portal;
+    if (!p) return;
+    p.data = await Store.patch(p.account, p.key, p.data, changes);
+    render();
+  }
+
+  // ─── الملاحظات ──────────────────────────────────────────────────────────────
+
+  function addNoteDialog() {
+    openModal({
+      title: t('addNote'),
+      body:
+        '<div class="field"><label for="ntTitle">' + esc(t('noteTitle')) + '</label>' +
+        '<input class="input" id="ntTitle" maxlength="80" placeholder="' + esc(t('noteTitlePh')) + '"></div>' +
+        '<div class="field"><label for="ntBody">' + esc(t('noteBody')) + '</label>' +
+        '<textarea class="input" id="ntBody" rows="5" maxlength="2000" style="resize:vertical" placeholder="' + esc(t('noteBodyPh')) + '"></textarea></div>',
+      actions: [
+        { label: t('cancel'), variant: 'btn--ghost' },
+        {
+          label: t('save'),
+          variant: 'btn',
+          onClick: function () {
+            var title = ($('#ntTitle').value || '').trim();
+            var body = ($('#ntBody').value || '').trim();
+            if (!title && !body) return;
+            var p = state.portal;
+            var notes = (p.data.notes || []).slice();
+            notes.unshift({
+              id: 'n_' + Date.now().toString(36),
+              title: title || t('noteBody'),
+              body: body,
+              createdAt: new Date().toISOString(),
+            });
+            saveVault({ notes: notes }).then(function () {
+              toast(t('noteAdded'), 'ok');
+            });
+          },
+        },
+      ],
+    });
+  }
+
+  function deleteNoteDialog(id) {
+    openModal({
+      title: t('confirmDeleteTitle'),
+      body: '<p>' + esc(t('confirmDeleteBody')) + '</p>',
+      actions: [
+        { label: t('cancel'), variant: 'btn--ghost' },
+        {
+          label: t('confirmYes'),
+          variant: 'btn--danger',
+          onClick: function () {
+            var p = state.portal;
+            var notes = (p.data.notes || []).filter(function (note) { return note.id !== id; });
+            saveVault({ notes: notes }).then(function () {
+              toast(t('noteDeleted'), 'ok');
+            });
+          },
+        },
+      ],
+    });
+  }
+
+  function exportVault() {
+    var p = state.portal;
+    if (!p) return;
+    var record = Object.assign({}, p.data);
+    // لا نُصدّر رمز الجلسة: نسخة المستخدم تحتاج بياناته فقط، لا مفتاح دخول حيّاً.
+    delete record.token;
+    var payload = {
+      exportedAt: new Date().toISOString(),
+      application: 'Enaya',
+      record: record,
+    };
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'enaya-record-' + (p.account.masked || 'patient').replace(/•/g, '') + '.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+    toast(t('exported'), 'ok');
+  }
+
+  // ─── الأحداث العامة ─────────────────────────────────────────────────────────
+
+  document.addEventListener('click', function (event) {
+    var trigger = event.target.closest('[data-act]');
+    if (!trigger) {
+      if (event.target.closest('[data-close-modal]')) closeModal();
+      return;
+    }
+
+    var act = trigger.getAttribute('data-act');
+
+    if (act === 'home') {
+      event.preventDefault();
+      go('home');
+      return;
+    }
+    if (act === 'go') {
+      event.preventDefault();
+      go(trigger.getAttribute('data-screen'));
+      return;
+    }
+    if (act === 'lang') {
+      event.preventDefault();
+      T.toggle();
+      render();
+      return;
+    }
+
+    if (act === 'menu') {
+      event.preventDefault();
+      toggleMenu();
+      return;
+    }
+
+    if (act === 'pick-category') {
+      var cat = trigger.getAttribute('data-cat');
+      state.kiosk.category = cat;
+      state.kiosk.docType = cat === 'domestic' ? 'iqama' : 'nid';
+      state.kiosk.docNo = '';
+      state.kiosk.cal = 'greg';
+      state.kiosk.errors = {};
+      state.kiosk.step = 2;
+      render();
+      return;
+    }
+
+    if (act === 'kiosk-back') {
+      state.kiosk.step = Math.max(1, state.kiosk.step - 1);
+      state.kiosk.errors = {};
+      render();
+      return;
+    }
+
+    if (act === 'kiosk-step2-next') {
+      var k = state.kiosk;
+      var payload = { documentType: k.docType, documentNumber: k.docNo };
+      var errors = localCheck(Object.assign({}, payload, {
+        category: k.category,
+        phone: '0500000000',
+        pin: '000000',
+        consent: true,
+      }));
+      var docError = errors.docNo;
+      if (docError) {
+        k.errors = { docNo: docError };
+        render();
+        return;
+      }
+      k.errors = {};
+      k.step = 3;
+      render();
+      return;
+    }
+
+    if (act === 'cal') {
+      state.kiosk.cal = trigger.getAttribute('data-cal');
+      state.kiosk.dob = { d: '', m: '', y: '' };
+      render();
+      return;
+    }
+
+    if (act === 'submit') {
+      submitRegistration();
+      return;
+    }
+
+    if (act === 'again') {
+      state.kiosk = freshKiosk();
+      render();
+      return;
+    }
+
+    if (act === 'open-portal') {
+      var session = state.kiosk.session;
+      if (session) {
+        state.kiosk = freshKiosk();
+        openPortal(session.account, session.key, session.data);
+      } else {
+        go('login');
+      }
+      return;
+    }
+
+    if (act === 'login') {
+      doLogin();
+      return;
+    }
+
+    if (act === 'logout') {
+      state.portal = null;
+      state.login = { docType: 'nid', docNo: '', pin: '', error: '', busy: false };
+      go('home');
+      return;
+    }
+
+    if (act === 'tab') {
+      state.portal.tab = trigger.getAttribute('data-tab');
+      render();
+      return;
+    }
+
+    if (act === 'add-note') {
+      addNoteDialog();
+      return;
+    }
+
+    if (act === 'delete-note') {
+      deleteNoteDialog(trigger.getAttribute('data-id'));
+      return;
+    }
+
+    if (act === 'export') {
+      exportVault();
+    }
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    if (!$('#modal').hidden) closeModal();
+    else closeMenu();
+  });
+
+  document.addEventListener('click', function (event) {
+    var nav = $('#topNav');
+    if (!nav || !nav.classList.contains('is-open')) return;
+    if (event.target.closest('#topNav') || event.target.closest('[data-act="menu"]')) return;
+    closeMenu();
+  });
+
+  // ─── الإقلاع ────────────────────────────────────────────────────────────────
+
+  function boot() {
+    if (!C || !C.supported()) {
+      $('#app').innerHTML =
+        '<div class="wrap" style="max-width:560px;padding-block:120px">' +
+        '<div class="notice notice--danger">' + icon('alert', 'ic') + '<div>' + esc(t('errNoCrypto')) + '</div></div></div>';
+      return;
+    }
+
+    render();
+
+    Api.init().then(function () {
+      var chips = document.querySelectorAll('#connChip');
+      if (!chips.length) return;
+      var wrapper = document.createElement('div');
+      wrapper.innerHTML = connectionChip();
+      var fresh = wrapper.firstElementChild;
+      for (var i = 0; i < chips.length; i += 1) {
+        var node = chips[i];
+        if (node.parentNode) node.parentNode.replaceChild(fresh.cloneNode(true), node);
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
