@@ -20,8 +20,10 @@
       list.push('http://localhost:3000');
     }
 
-    // نفس الأصل (إن كان الخادم يقدّم الواجهة أيضاً)
-    list.push('');
+    // نفس الأصل (إن كان الخادم يقدّم الواجهة أيضاً).
+    // نستثني مضيفي الاستضافة الثابتة لأن /health غير موجود عليها أصلاً.
+    var staticHost = /\.github\.io$/i.test(host) || /\.gitlab\.io$/i.test(host) || /\.netlify\.app$/i.test(host);
+    if (!staticHost) list.push('');
 
     return list.filter(function (item, index, all) {
       return all.indexOf(item) === index;
